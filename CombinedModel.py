@@ -259,7 +259,6 @@ def main():
             X = memory
 
             # Move X to the device of decoder and ensure correct dtype
-            print("X", X)
             X = X.to(device=self.decoder.device, dtype=self.decoder.dtype)
             decoder_out = self.decoder(
                 inputs_embeds=X, 
@@ -267,7 +266,6 @@ def main():
                 use_cache=False, 
                 labels=labels
             )
-            print("decoder_out", decoder_out)
             hidden_states = decoder_out[0]
             #return dec_output
             #print(hidden_states)
