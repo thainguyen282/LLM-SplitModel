@@ -133,9 +133,8 @@ def denoising_attention_train(
         - Output: attention values have shape :math:`(B, Nt, E)`; attention weights
             have shape :math:`(B, Nt, Ns)`
     """
-
     H, Nt, E = query.shape  # split over heads E is D / H
-    B, Nl, P = Z.shape  # not split over heads
+    B, Nl, P = key.shape  # not split over heads
     nheads = int(P / E)
 
     # Make causal mask if needed and Transform mask to 0s and -inf
@@ -212,6 +211,16 @@ def denoising_attention_eval(
     :return: attention values have shape :math:`(B, Nt, E)`;
              attention weights have shape :math:`(B, Nt, Ns)`
     """
+    # Cast all input tensors to bfloat16 for consistency
+    projected_u = projected_u.to(torch.bfloat16)
+    projected_b = projected_b.to(torch.bfloat16)
+    mu = mu.to(torch.bfloat16)
+    logvar = logvar.to(torch.bfloat16)
+    pi = pi.to(torch.bfloat16)
+    w_v = w_v.to(torch.bfloat16)
+    b_v = b_v.to(torch.bfloat16)
+    if attn_mask is not None:
+        attn_mask = attn_mask.to(torch.bfloat16)
     B, H, Nt, P = projected_u.shape
     B, Nl, P = mu.shape
     H, E, P = w_v.shape
@@ -334,6 +343,7 @@ def _in_projection_packed(
         - in output list :math:`[q', k', v']`, each output tensor will have the
             same shape as the corresponding input tensor.
     """
+
     E = q.size(-1)
     if k is v:
         if q is k:
@@ -400,28 +410,28 @@ def _in_projection(
          - v': :math:`[Vdims..., Eq]`
 
     """
-    Eq, Ek, Ev = q.size(-1), k.size(-1), v.size(-1)
-    assert w_q.shape == (
-        Eq,
-        Eq,
-    ), f"expecting query weights shape of {(Eq, Eq)}, but got {w_q.shape}"
-    assert w_k.shape == (
-        Eq,
-        Ek,
-    ), f"expecting key weights shape of {(Eq, Ek)}, but got {w_k.shape}"
-    assert w_v.shape == (
-        Eq,
-        Ev,
-    ), f"expecting value weights shape of {(Eq, Ev)}, but got {w_v.shape}"
-    assert b_q is None or b_q.shape == (
-        Eq,
-    ), f"expecting query bias shape of {(Eq,)}, but got {b_q.shape}"
-    assert b_k is None or b_k.shape == (
-        Eq,
-    ), f"expecting key bias shape of {(Eq,)}, but got {b_k.shape}"
-    assert b_v is None or b_v.shape == (
-        Eq,
-    ), f"expecting value bias shape of {(Eq,)}, but got {b_v.shape}"
+    # Eq, Ek, Ev = q.size(-1), k.size(-1), v.size(-1)
+    # assert w_q.shape == (
+    #     Eq,
+    #     Eq,
+    # ), f"expecting query weights shape of {(Eq, Eq)}, but got {w_q.shape}"
+    # assert w_k.shape == (
+    #     Eq,
+    #     Ek,
+    # ), f"expecting key weights shape of {(Eq, Ek)}, but got {w_k.shape}"
+    # assert w_v.shape == (
+    #     Eq,
+    #     Ev,
+    # ), f"expecting value weights shape of {(Eq, Ev)}, but got {w_v.shape}"
+    # assert b_q is None or b_q.shape == (
+    #     Eq,
+    # ), f"expecting query bias shape of {(Eq,)}, but got {b_q.shape}"
+    # assert b_k is None or b_k.shape == (
+    #     Eq,
+    # ), f"expecting key bias shape of {(Eq,)}, but got {b_k.shape}"
+    # assert b_v is None or b_v.shape == (
+    #     Eq,
+    # ), f"expecting value bias shape of {(Eq,)}, but got {b_v.shape}"
     return linear(q, w_q, b_q), linear(k, w_k, b_k), linear(v, w_v, b_v)
 
 
@@ -464,23 +474,27 @@ class DenoisingMultiheadAttention(Module):
     def __init__(
         self,
         embed_dim,
-        num_heads,
+        compress_dim=None,
+        num_heads=1,
         dropout=0.0,
         bias=True,
         add_bias_kv=False,
         add_zero_attn=False,
         kdim=None,
         vdim=None,
+        qdim=None,
         batch_first=False,
         device=None,
-        dtype=None,
+        dtype=torch.bfloat16,
     ) -> None:
         factory_kwargs = {"device": device, "dtype": dtype}
         super(DenoisingMultiheadAttention, self).__init__()
         self.embed_dim = embed_dim
+        self.compress_dim = compress_dim
+        self.qdim = qdim if qdim is not None else embed_dim
         self.kdim = kdim if kdim is not None else embed_dim
         self.vdim = vdim if vdim is not None else embed_dim
-        self._qkv_same_embed_dim = self.kdim == embed_dim and self.vdim == embed_dim
+        self._qkv_same_embed_dim = self.kdim == embed_dim and self.vdim == embed_dim and self.qdim == embed_dim
 
         self.num_heads = num_heads
         self.dropout = dropout
@@ -492,7 +506,7 @@ class DenoisingMultiheadAttention(Module):
 
         if self._qkv_same_embed_dim is False:
             self.q_proj_weight = Parameter(
-                torch.empty((embed_dim, embed_dim), **factory_kwargs)
+                torch.empty((embed_dim, self.qdim), **factory_kwargs)
             )
             self.k_proj_weight = Parameter(
                 torch.empty((embed_dim, self.kdim), **factory_kwargs)
@@ -509,6 +523,7 @@ class DenoisingMultiheadAttention(Module):
             self.register_parameter("k_proj_weight", None)
             self.register_parameter("v_proj_weight", None)
 
+        # need to handle case having bias
         if bias:
             self.in_proj_bias = Parameter(torch.empty(3 * embed_dim, **factory_kwargs))
         else:
@@ -647,7 +662,7 @@ class DenoisingMultiheadAttention(Module):
                 query,
                 key,
                 value,
-                self.embed_dim,
+                self.compress_dim,
                 self.num_heads,
                 self.in_proj_weight,
                 self.in_proj_bias,
@@ -673,7 +688,7 @@ def denoising_multi_head_attention_forward(
     query: Tensor,
     key: Tensor,
     value: Tensor,
-    embed_dim_to_check: int,
+    embed_dim: int,
     num_heads: int,
     in_proj_weight: Tensor,
     in_proj_bias: Optional[Tensor],
@@ -751,11 +766,45 @@ def denoising_multi_head_attention_forward(
         - attn_output_weights: :math:`(N, L, S)` where N is the batch size,
           L is the target sequence length, S is the source sequence length.
     """
-
+    # --- ADDED: Cast all tensors to bfloat16 ---
+    if in_proj_weight is not None:
+        in_proj_weight = in_proj_weight.to(torch.bfloat16)
+    if q_proj_weight is not None:
+        q_proj_weight = q_proj_weight.to(torch.bfloat16)
+    if k_proj_weight is not None:
+        k_proj_weight = k_proj_weight.to(torch.bfloat16)
+    if v_proj_weight is not None:
+        v_proj_weight = v_proj_weight.to(torch.bfloat16)
+    if in_proj_bias is not None:
+        in_proj_bias = in_proj_bias.to(torch.bfloat16)
+    if bias_k is not None:
+        bias_k = bias_k.to(torch.bfloat16)
+    if bias_v is not None:
+        bias_v = bias_v.to(torch.bfloat16)
+    out_proj_weight = out_proj_weight.to(torch.bfloat16)
+    if out_proj_bias is not None:
+        out_proj_bias = out_proj_bias.to(torch.bfloat16)
+    if attn_mask is not None:
+        attn_mask = attn_mask.to(torch.bfloat16)
+    if key_padding_mask is not None:
+        key_padding_mask = key_padding_mask.to(torch.bfloat16)
+    if q_proj_weight is not None:
+        q_proj_weight = q_proj_weight.to(torch.bfloat16)
+    if k_proj_weight is not None:
+        k_proj_weight = k_proj_weight.to(torch.bfloat16)
+    if v_proj_weight is not None:
+        v_proj_weight = v_proj_weight.to(torch.bfloat16)
+    if static_k is not None:
+        static_k = static_k.to(torch.bfloat16)
+    if static_v is not None:
+        static_v = static_v.to(torch.bfloat16)
+    # --- END ADDED ---
     # Fetch the variables needed
     (key, pi, mu, logvar) = key
     (value, _, _, _) = value
-
+    query = query.to(torch.bfloat16)
+    key = key.to(torch.bfloat16)
+    value = value.to(torch.bfloat16)
     tens_ops = (
         query,
         key,
@@ -774,7 +823,7 @@ def denoising_multi_head_attention_forward(
             query,
             key,
             value,
-            embed_dim_to_check,
+            embed_dim,
             num_heads,
             in_proj_weight,
             in_proj_bias,
@@ -797,11 +846,11 @@ def denoising_multi_head_attention_forward(
         )
 
     # set up shape vars
-    tgt_len, bsz, embed_dim = query.shape
+    tgt_len, bsz, compress_dim = query.shape
     src_len, _, _ = key.shape
-    assert (
-        embed_dim == embed_dim_to_check
-    ), f"was expecting embedding dimension of {embed_dim_to_check}, but got {embed_dim}"
+    # assert (
+    #     embed_dim == embed_dim_to_check
+    # ), f"was expecting embedding dimension of {embed_dim_to_check}, but got {embed_dim}"
     if isinstance(embed_dim, torch.Tensor):
         # embed_dim can be a tensor when JIT tracing
         head_dim = embed_dim.div(num_heads, rounding_mode="trunc")
@@ -1009,7 +1058,12 @@ def denoising_multi_head_attention_forward(
         #                                                                          dropout_p)
 
         # Get weights
-        _, w_k, w_v = in_proj_weight.split([embed_dim, embed_dim, embed_dim])
+        if in_proj_weight is not None:
+            _, w_k, w_v = in_proj_weight.split([embed_dim, embed_dim, embed_dim])
+        else:
+            w_k = k_proj_weight
+            w_v = v_proj_weight
+            w_q = q_proj_weight
         if in_proj_bias is None:
             b_q = b_k = b_v = None
         else:
@@ -1020,6 +1074,8 @@ def denoising_multi_head_attention_forward(
         mh_w_v = w_v.view(num_heads, head_dim, -1)  # [heads, d/head, p]
         mh_b_v = b_v.view(num_heads, head_dim).unsqueeze(-1)  # [heads, d/head, 1]
         mh_b_k = b_k.view(num_heads, head_dim).unsqueeze(-1)  # [heads, d/head, 1]
+        # mh_w_q = w_q.view(num_heads, head_dim, -1)  # [heads, d/head, p]
+        # mh_b_q = b_q.view(num_heads, head_dim).unsqueeze(-1)  # [heads, d/head, 1]
         q_reshape = q.view(bsz, num_heads, tgt_len, head_dim)  # [B, heads, Nt, d/head]
 
         # Project the multihead query and bias into the p space from the e (d/head) space

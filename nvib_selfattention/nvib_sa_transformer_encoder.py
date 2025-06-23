@@ -261,6 +261,7 @@ class NVIBTransformerEncoderLayer(Module):
     def __init__(
         self,
         d_model: int,
+        compress_dim: int,
         nhead: int,
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
@@ -283,7 +284,7 @@ class NVIBTransformerEncoderLayer(Module):
         self.nvib_layer = Nvib(
             # for our setting change size_out to output dimension
             size_in=d_model,
-            size_out=d_model,
+            size_out=compress_dim,
             # prior_mu=self.mu_prior_embedding,
             # prior_var=self.var_prior_embedding,
             # prior_alpha=self.alpha_prior_embedding,
@@ -291,9 +292,11 @@ class NVIBTransformerEncoderLayer(Module):
             kappa=kappa,
             nheads=nhead,
         )
+
+        # add code here
         self.self_attn = DenoisingMultiheadAttention(
             # change d_model (size_in) to output dimension
-            d_model, nhead, dropout=dropout, batch_first=batch_first, **factory_kwargs
+            d_model, compress_dim, nhead, dropout=dropout, batch_first=batch_first, **factory_kwargs, kdim=compress_dim, vdim=compress_dim, qdim=compress_dim
         )
         #########################################################
 
@@ -459,9 +462,22 @@ class NVIBTransformerEncoderLayer(Module):
             )
             x = self.norm1(x + out)
             x = self.norm2(x + self._ff_block(x))
-        # Calculate KL divergence
-        kl_g = self.nvib_layer.kl_gaussian(**latent_dict)
-        kl_d = self.nvib_layer.kl_dirichlet(**latent_dict)
+       # Calculate KL divergence
+        # The KL methods expect tensors in [Nl, B, H] format, but when batch_first=True,
+        # the tensors in latent_dict are in [B, Nl, H] format. We need to handle this properly.
+        if self.self_attn.batch_first:
+            # For KL calculation, we need to transpose the tensors back to [Nl, B, H] format
+            # but we need to be careful not to affect the attention flow
+            kl_latent_dict = {
+                "mu": latent_dict["mu"].transpose(0, 1),
+                "logvar": latent_dict["logvar"].transpose(0, 1),
+                "alpha": latent_dict["alpha"].transpose(0, 1),
+                "memory_key_padding_mask": latent_dict["memory_key_padding_mask"]
+            }
+        else:
+            kl_latent_dict = latent_dict
+        kl_g = self.nvib_layer.kl_gaussian(**kl_latent_dict)
+        kl_d = self.nvib_layer.kl_dirichlet(**kl_latent_dict)
         return x, attention, kl_g, kl_d, latent_dict
 
     # self-attention block
@@ -473,8 +489,11 @@ class NVIBTransformerEncoderLayer(Module):
         alpha_skip=None,
     ) -> Tensor:
         # Note query does not include the prior
-        latent_dict = self.nvib_layer(x, key_padding_mask, alpha_skip, batch_first=self.self_attn.batch_first, logging=True)
-        query = x
+        latent_dict = self.nvib_layer(x, key_padding_mask, alpha_skip, batch_first=self.self_attn.batch_first, logging=False)
+        if latent_dict["query"] is not None:
+            query = latent_dict["query"]
+        else:
+            query = x
         key = latent_dict["z"]
         value = latent_dict["z"]
         

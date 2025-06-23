@@ -7,7 +7,8 @@
 #
 
 import math
-
+import subprocess
+from rich.console import Console
 import torch
 import torch.nn as nn
 
@@ -17,7 +18,6 @@ import torch.nn as nn
 # Nl: latent length
 # B: batch size
 # H: hidden dimension
-
 
 def eye_scaled_(tensor, scale=1.0):
     with torch.no_grad():
@@ -52,19 +52,146 @@ class Quadratic(torch.nn.Module):
         a Tensor of output data. We can use Modules defined in the constructor as
         well as arbitrary operators on Tensors.
         """
-        return self.linear(x) + self.quadratic(x**2)
+        # Comprehensive NaN detection
+        # self._detect_nan_input(x)
+        # self._detect_nan_weights()
+        
+        # Clamp input to prevent quadratic explosion
+        x_clamped = torch.clamp(x, -10.0, 10.0)
+        
+        # Monitor input statistics
+        # self._log_input_stats(x, x_clamped)
+        
+        # Compute quadratic term safely
+        x_squared = x_clamped ** 2
+        
+        # Monitor quadratic computation
+        # self._log_quadratic_stats(x_clamped, x_squared)
+        
+        # Safety check for NaN/Inf
+        if torch.isnan(x_squared).any() or torch.isinf(x_squared).any():
+            print(f"WARNING: NaN/Inf in x_squared! Input stats: min={x.min()}, max={x.max()}, mean={x.mean()}")
+            x_squared = torch.nan_to_num(x_squared, nan=0.0, posinf=100.0, neginf=0.0)
+        
+        linear_output = self.linear(x)
+        quadratic_output = self.quadratic(x_squared)
+        
+        # Monitor outputs
+        # self._log_output_stats(linear_output, quadratic_output)
+        
+        result = linear_output + quadratic_output
+        
+        # Final safety check
+        if torch.isnan(result).any() or torch.isinf(result).any():
+            print(f"WARNING: NaN/Inf in final result!")
+            result = torch.nan_to_num(result, nan=0.0, posinf=1e6, neginf=-1e6)
+            
+        return result
+    
+    def _detect_nan_input(self, x):
+        """Detect NaN in input tensor"""
+        if torch.isnan(x).any():
+            nan_indices = torch.where(torch.isnan(x))
+            print(f"WARNING: NaN detected in input at indices: {nan_indices}")
+            print(f"Input shape: {x.shape}")
+            print(f"Input dtype: {x.dtype}")
+            
+    def _detect_nan_weights(self):
+        """Detect NaN in weight matrices"""
+        if torch.isnan(self.weight_linear).any():
+            print(f"WARNING: NaN in linear weights!")
+            print(f"Linear weight stats: min={self.weight_linear.min()}, max={self.weight_linear.max()}")
+            
+        if torch.isnan(self.weight_quadratic).any():
+            print(f"WARNING: NaN in quadratic weights!")
+            print(f"Quadratic weight stats: min={self.weight_quadratic.min()}, max={self.weight_quadratic.max()}")
+            
+        if torch.isnan(self.bias).any():
+            print(f"WARNING: NaN in bias!")
+            print(f"Bias stats: min={self.bias.min()}, max={self.bias.max()}")
+    
+    def _log_input_stats(self, x_original, x_clamped):
+        """Log input statistics"""
+        if hasattr(self, 'step_count'):
+            self.step_count += 1
+        else:
+            self.step_count = 0
+            
+        if self.step_count % 100 == 0:  # Log every 100 steps
+            print(f"Input stats (step {self.step_count}):")
+            print(f"  Original - min: {x_original.min():.6f}, max: {x_original.max():.6f}, mean: {x_original.mean():.6f}")
+            print(f"  Clamped  - min: {x_clamped.min():.6f}, max: {x_clamped.max():.6f}, mean: {x_clamped.mean():.6f}")
+            
+            # Check for extreme values
+            extreme_count = torch.sum(torch.abs(x_original) > 5.0)
+            if extreme_count > 0:
+                print(f"  WARNING: {extreme_count} extreme values (>5.0) in input")
+    
+    def _log_quadratic_stats(self, x_clamped, x_squared):
+        """Log quadratic computation statistics"""
+        if hasattr(self, 'step_count') and self.step_count % 100 == 0:
+            print(f"Quadratic stats (step {self.step_count}):")
+            print(f"  x_clamped - min: {x_clamped.min():.6f}, max: {x_clamped.max():.6f}")
+            print(f"  x_squared - min: {x_squared.min():.6f}, max: {x_squared.max():.6f}")
+            
+            # Check for large quadratic values
+            large_quad_count = torch.sum(x_squared > 50.0)
+            if large_quad_count > 0:
+                print(f"  WARNING: {large_quad_count} large quadratic values (>50.0)")
+    
+    def _log_output_stats(self, linear_output, quadratic_output):
+        """Log output statistics"""
+        if hasattr(self, 'step_count') and self.step_count % 100 == 0:
+            print(f"Output stats (step {self.step_count}):")
+            print(f"  Linear    - min: {linear_output.min():.6f}, max: {linear_output.max():.6f}, mean: {linear_output.mean():.6f}")
+            print(f"  Quadratic - min: {quadratic_output.min():.6f}, max: {quadratic_output.max():.6f}, mean: {quadratic_output.mean():.6f}")
+            
+            # Check for extreme outputs
+            if torch.abs(quadratic_output).max() > 1000.0:
+                print(f"  WARNING: Extreme quadratic output detected!")
+                print(f"  Quadratic output range: {quadratic_output.min():.6f} to {quadratic_output.max():.6f}")
 
 
 class Exponential(nn.Module):
     """
-    Simple exponential activation function
+    Safe exponential activation function with clamping
     """
-
-    def __init__(self):
+    def __init__(self, max_value=20.0, min_value=-20.0):
         super().__init__()
+        self.max_value = max_value
+        self.min_value = min_value
+        self.call_count = 0
 
     def forward(self, x):
-        return torch.exp(x)
+        self.call_count += 1
+        
+        # Clamp input to prevent exponential explosion
+        x_clamped = torch.clamp(x, self.min_value, self.max_value)
+        
+        # Monitor input statistics every 100 calls
+        # if self.call_count % 100 == 0:
+        #     print(f"Exponential activation (call {self.call_count}):")
+        #     print(f"  Input range: {x.min():.6f} to {x.max():.6f}")
+        #     print(f"  Clamped range: {x_clamped.min():.6f} to {x_clamped.max():.6f}")
+            
+        #     # Check for extreme values
+        #     extreme_count = torch.sum(torch.abs(x) > 10.0)
+        #     if extreme_count > 0:
+        #         print(f"  WARNING: {extreme_count} extreme input values (>10.0)")
+        
+        # Apply exponential
+        result = torch.exp(x_clamped)
+        
+        # Additional safety check for output
+        if torch.isnan(result).any() or torch.isinf(result).any():
+            print(f"WARNING: NaN/Inf in exponential output! Input range: {x.min():.6f} to {x.max():.6f}")
+            result = torch.nan_to_num(result, nan=1.0, posinf=torch.exp(self.max_value), neginf=1.0)
+            
+        # Monitor output statistics
+        # if self.call_count % 100 == 0:
+        #     print(f"  Output range: {result.min():.6f} to {result.max():.6f}")
+            
+        return result
 
 
 class Nvib(nn.Module):
@@ -94,10 +221,10 @@ class Nvib(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Priors
-        self.prior_mu = (prior_mu if prior_mu is not None else torch.zeros(size_in)).to(
+        self.prior_mu = (prior_mu if prior_mu is not None else torch.zeros(size_out)).to(
             self.device
         )  # [H]
-        self.prior_var = (prior_var if prior_var is not None else torch.ones(size_in)).to(
+        self.prior_var = (prior_var if prior_var is not None else torch.ones(size_out)).to(
             self.device
         )  # [H]
         self.prior_log_alpha = (
@@ -118,9 +245,13 @@ class Nvib(nn.Module):
         self.size_in = size_in
         self.size_out = size_out
         self.d = int(size_in / nheads)  # dimension of the head
-        self.alpha_activation = Exponential()  # projection for alphas
+        self.alpha_activation = Exponential(max_value=15.0, min_value=-15.0)  # Safer exponential with clamping
         self.mu_proj = nn.Linear(size_in, size_out)  # Project to mean
         self.logvar_proj = nn.Linear(size_in, size_out)  # Project log variance
+        if size_in > size_out:
+            self.q_proj = nn.Linear(size_in, size_out)  # Project to model size
+        else:
+            self.q_proj = None
         self.alpha_proj = Quadratic(size_in, 1)  # Project to model size
         self.nheads = nheads  # number of heads
 
@@ -137,6 +268,11 @@ class Nvib(nn.Module):
         # Initialise mu projection
         eye_scaled_(self.mu_proj.weight, self.mu_tau)
         init_vector_(self.mu_proj.bias, self.prior_mu * (1 - self.mu_tau))
+        
+        # I just add this to make the q_proj 
+        if self.q_proj is not None:
+            eye_scaled_(self.q_proj.weight, self.mu_tau)
+            init_vector_(self.q_proj.bias, self.prior_mu * (1 - self.mu_tau))
 
         # Initialise logvar projection
         nn.init.constant_(self.logvar_proj.weight, 0)
@@ -172,6 +308,9 @@ class Nvib(nn.Module):
             std = torch.exp(0.5 * logvar)  # [Nl,B,H]
             eps = torch.randn_like(std)  # [Nl,B,H]
             z = eps.mul(std).add_(mu)  # [Nl,B,H]
+            
+            # Clean up intermediate tensors to free GPU memory
+            # del std, eps
         else:
             z = mu  # [Nl,B,H]
         return z  # [Nl,B,H]
@@ -201,7 +340,59 @@ class Nvib(nn.Module):
         normalising_sum = torch.sum(gammas, 0).unsqueeze(0) + torch.finfo(gammas.dtype).tiny
         pi = torch.div(gammas, normalising_sum)
 
+        # Clean up intermediate tensors to free GPU memory
+        # del gammas, normalising_sum
+        # if self.training:
+            # del gamma_dist
+
         return pi
+
+    def _detect_encoder_nan(self, encoder_output):
+        """Detect NaN in encoder output"""
+        if torch.isnan(encoder_output).any():
+            nan_indices = torch.where(torch.isnan(encoder_output))
+            print(f"WARNING: NaN in encoder_output at indices: {nan_indices}")
+            print(f"Encoder output shape: {encoder_output.shape}")
+            print(f"Encoder output stats: min={encoder_output.min()}, max={encoder_output.max()}, mean={encoder_output.mean()}")
+            
+            # Check for extreme values
+            extreme_count = torch.sum(torch.abs(encoder_output) > 10.0)
+            if extreme_count > 0:
+                print(f"WARNING: {extreme_count} extreme values (>10.0) in encoder_output")
+                
+    def _monitor_projections(self, mu, logvar, name):
+        """Monitor projection outputs"""
+        if torch.isnan(mu).any():
+            print(f"WARNING: NaN in {name} mu projection")
+            print(f"Mu stats: min={mu.min()}, max={mu.max()}, mean={mu.mean()}")
+            
+        if torch.isnan(logvar).any():
+            print(f"WARNING: NaN in {name} logvar projection")
+            print(f"Logvar stats: min={logvar.min()}, max={logvar.max()}, mean={logvar.mean()}")
+            
+        # Check for extreme values
+        if torch.abs(mu).max() > 100.0:
+            print(f"WARNING: Extreme mu values detected in {name}")
+            
+        if torch.abs(logvar).max() > 50.0:
+            print(f"WARNING: Extreme logvar values detected in {name}")
+            
+    def _monitor_alpha_computation(self, log_alpha, alpha):
+        """Monitor alpha computation"""
+        if torch.isnan(log_alpha).any():
+            print(f"WARNING: NaN in log_alpha")
+            print(f"Log_alpha stats: min={log_alpha.min()}, max={log_alpha.max()}, mean={log_alpha.mean()}")
+            
+        if torch.isnan(alpha).any():
+            print(f"WARNING: NaN in alpha after activation")
+            print(f"Alpha stats: min={alpha.min()}, max={alpha.max()}, mean={alpha.mean()}")
+            
+        # Check for extreme values
+        if torch.abs(log_alpha).max() > 30.0:
+            print(f"WARNING: Extreme log_alpha values detected")
+            
+        if alpha.max() > 1000.0:
+            print(f"WARNING: Extreme alpha values detected after activation (max: {alpha.max():.2f})")
 
     def sample(self, number_samples, memory_key_padding_mask, device, *args, **kwargs):
         """
@@ -260,17 +451,11 @@ class Nvib(nn.Module):
 
         # Scaling
         # Total number of vectors sampled
-        if memory_key_padding_mask is not None:
-            k0 = torch.sum(~memory_key_padding_mask.transpose(1, 0), 0)  # [B]
-            # Input length
-            n = k0 / self.kappa  # [B]
-            alpha = alpha.transpose(0, 1)
-            
-            alpha = alpha.masked_fill(memory_key_padding_mask.transpose(1, 0).unsqueeze(-1), 0)
-        else:
-            k0 = torch.ones(alpha.size(1), device=alpha.device) * alpha.size(0)  # [B]
-            n = k0 / self.kappa  # [B]
-        
+        k0 = torch.sum(~memory_key_padding_mask.transpose(1, 0), 0)  # [B]
+        # Input length
+        n = k0 / self.kappa  # [B]
+
+        alpha = alpha.masked_fill(memory_key_padding_mask.transpose(1, 0).unsqueeze(-1), 0)
         alpha0_q = torch.sum(alpha.transpose(2, 0), -1)  # [1,B]
         expected_pi = alpha.squeeze(-1) / alpha0_q  # [Nl,B]
 
@@ -278,8 +463,7 @@ class Nvib(nn.Module):
         var_ratio = logvar.exp() / self.prior_var
         t1 = (mu - self.prior_mu) ** 2 / self.prior_var
         kl = var_ratio + t1 - 1 - var_ratio.log()
-        if memory_key_padding_mask is not None:
-            kl = kl.masked_fill(memory_key_padding_mask.transpose(1, 0).unsqueeze(-1), 0)
+        kl = kl.masked_fill(memory_key_padding_mask.transpose(1, 0).unsqueeze(-1), 0)
 
         # Mean over embedding dimension
         kl = torch.mean(kl, -1)  # [Nl,B]
@@ -301,7 +485,6 @@ class Nvib(nn.Module):
         Nota Bene: digamma and lgamma cannot be zero
         """
         # Total number of vectors sampled
-        print("memory_key_padding_mask", torch.sum(~memory_key_padding_mask.transpose(1, 0), 0))
         k0 = torch.sum(~memory_key_padding_mask.transpose(1, 0), 0)  # [B]
         # Input length
         n = k0 / self.kappa  # [B]
@@ -310,11 +493,10 @@ class Nvib(nn.Module):
 
         # Sum the alphas
         alpha = alpha.masked_fill(memory_key_padding_mask.transpose(1, 0).unsqueeze(-1), 0)
-        alpha0_q = torch.sum(alpha, 0).squeeze(-1).to(torch.float64)  # [B]
-        alpha0_p = (torch.ones_like(alpha0_q) * (self.prior_alpha + lowerBound)).to(
-            torch.float64
-        )  # [B]
+        alpha0_q = torch.sum(alpha, 0).squeeze(-1)  # [B]
+        alpha0_p = torch.ones_like(alpha0_q) * (self.prior_alpha + lowerBound)  # [B]
 
+        # Keep computations in bfloat16 until final conversion
         kl = (
             torch.lgamma(alpha0_q)
             - torch.lgamma(alpha0_p)
@@ -322,7 +504,14 @@ class Nvib(nn.Module):
             + k0 * (torch.lgamma(alpha0_p / k0) - torch.lgamma(alpha0_q / k0))
         ) / n
 
-        return kl.to(torch.float32)
+        # Clean up intermediate tensors
+        # del alpha0_q, alpha0_p, k0, n, lowerBound
+        # torch.cuda.empty_cache()
+
+        # Convert to float32 only at the end
+        # return kl.to(torch.float32)
+
+        return kl
 
     def forward(
         self, encoder_output, mask, alpha_skip=None, batch_first=True, logging=False, **kwargs
@@ -358,20 +547,32 @@ class Nvib(nn.Module):
         # Project to mean, log variance and log alpha
         mu = self.mu_proj(encoder_output)
         logvar = self.logvar_proj(encoder_output)
+        if self.q_proj is not None:
+            query = self.q_proj(encoder_output)
+        else:
+            query = None
+            
         # Alpha skip connection in log space
         if alpha_skip is not None:
             log_alpha = self.alpha_proj(encoder_output) + torch.log(alpha_skip[1:, :, :])
+            # Clamp log_alpha to prevent extreme values
+            log_alpha = torch.clamp(log_alpha, min=-20.0, max=20.0)
             alpha = self.alpha_activation(log_alpha)
         else:
             log_alpha = self.alpha_proj(encoder_output)
+            # Clamp log_alpha to prevent extreme values
+            log_alpha = torch.clamp(log_alpha, min=-20.0, max=20.0)
             alpha = self.alpha_activation(log_alpha)
-
+            
+        # Monitor alpha computation
+        self._monitor_alpha_computation(log_alpha, alpha)
+            
+        assert not torch.isnan(alpha).any(), "NaN detected in alpha"
         # Clamp alpha
-        # alpha = torch.clamp(alpha, min=0, max=torch.finfo(alpha.dtype).max - 1000)
+        alpha = torch.clamp(alpha, min=0.1, max=torch.finfo(alpha.dtype).max - 1000)
         if mask is not None:
             mask = mask.transpose(1, 0).unsqueeze(-1)
-        # Unknowns are the prior [1, B, P]
-
+        # Unknowns are the prior [1, B, P]          
         unknown_mu = torch.ones_like(mu[0:1, :, :], device=self.device) * self.prior_mu
         unknown_logvar = torch.ones_like(logvar[0:1, :, :], device=self.device) * torch.log(
             self.prior_var
@@ -385,11 +586,19 @@ class Nvib(nn.Module):
         logvar = torch.cat((unknown_logvar, logvar), 0)
         alpha = torch.cat((self.alpha_activation(unknown_log_alpha), alpha), 0)
         log_alpha = torch.cat((unknown_log_alpha, log_alpha), 0)
+        assert not torch.isnan(alpha).any(), "NaN detected in alpha"
+        
+        # Additional clamping after concatenation to ensure final alpha values are bounded
+        # This prevents any potential issues from the concatenated unknown_alpha values
+        alpha = torch.clamp(alpha, min=0.1, max=torch.finfo(alpha.dtype).max - 1000)
 
         # Include mask for unknowns [Nl,B,1]
         if mask is not None:
             unknown_mask = torch.zeros_like(mask[0:1, :, :], dtype=bool, device=self.device)
-            mask = torch.cat((unknown_mask, mask), 0)
+            mask = torch.cat((unknown_mask, mask), 0)            
+        # Clean up intermediate tensors to free GPU memory
+        # del unknown_mu, unknown_logvar, unknown_log_alpha, unknown_mask
+
 
         # Multi sample
         if self.kappa > 1:
@@ -418,14 +627,17 @@ class Nvib(nn.Module):
             logvar = logvar.view(Nl * self.kappa, B, H)  # [kappa*Nl,B,P]
             alpha = alpha.view(Nl * self.kappa, B, 1)  # [kappa*Nl,B,1]
 
+            # Clean up intermediate tensors to free GPU memory
+            # del rho, sub_rho
         else:
             # Reparameterise
             z = self.reparameterize_gaussian(mu, logvar)
             pi = self.reparameterize_dirichlet(alpha, mask)
 
-
         # Reshape for batch first
         if batch_first:
+            if query is not None:   
+                query = query.transpose(1, 0)
             z = z.transpose(1, 0)
             pi = pi.transpose(1, 0)
             mu = mu.transpose(1, 0)
@@ -443,6 +655,7 @@ class Nvib(nn.Module):
 
             return {
                 "z": (z, pi, mu, logvar),  # This is how the decoder gets the parameters
+                "query": query,
                 "pi": pi,
                 "memory_key_padding_mask": mask.transpose(2, 0).squeeze(0) if mask is not None else None,  # [B,Nl]
                 "mu": mu,
@@ -458,6 +671,7 @@ class Nvib(nn.Module):
         else:
             return {
                 "z": (z, pi, mu, logvar),  # This is how the decoder gets the parameters
+                "query": query,
                 "pi": pi,
                 "memory_key_padding_mask": mask.transpose(2, 0).squeeze(0) if mask is not None else None,  # [B,Nl]
                 "mu": mu,
