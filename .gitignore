@@ -1,0 +1,10 @@
+# Ignore temp folders
+temp-with-*/
+
+# Ignore specific JSON files
+train_data.json
+val_data.json
+
+# Optional: Ignore Python cache files and junk
+__pycache__/
+*.pyc
