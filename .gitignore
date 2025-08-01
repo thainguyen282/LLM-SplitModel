@@ -8,3 +8,9 @@ val_data.json
 # Optional: Ignore Python cache files and junk
 __pycache__/
 *.pyc
+
+# ignore data
+data/
+evalplus_results/
+wandb/
+

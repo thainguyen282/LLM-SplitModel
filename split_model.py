@@ -1,196 +1,53 @@
-import os
-import sys
-from typing import List
-
-import fire
 import torch
-import transformers
-from datasets import load_dataset, concatenate_datasets, DatasetDict, load_from_disk, Dataset
-from torch.distributions.gamma import Gamma
-from tqdm import tqdm
-import random
+import torch.nn as nn
+import torch.nn.functional as F
+import gc
+import wandb
+
+from typing import Optional, List, Tuple, Union
+
 from transformers import (
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    AutoConfig,
     PreTrainedModel,
     GenerationMixin,
-    GenerationConfig,
+    AutoModelForCausalLM,
+    AutoModel,
 )
-import pynvml
-from transformers import TrainerCallback
-from rich.console import Console
-import subprocess
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.cache_utils import Cache, DynamicCache, StaticCache, SlidingWindowCache
+from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
-import transformers
+from configuration_split import SplitConfig
 from nvib.denoising_attention import DenoisingMultiheadAttention
 from nvib.nvib_layer import Nvib
 from nvib_selfattention.nvib_sa_transformer_encoder import (
     NVIBTransformerEncoder,
     NVIBTransformerEncoderLayer,
 )
-from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.cache_utils import Cache, DynamicCache, StaticCache, SlidingWindowCache
-from transformers import set_seed
-from transformers import Trainer, TrainerCallback
-from datasets import load_dataset, concatenate_datasets, DatasetDict, load_from_disk
-from utils.prompter import Prompter
-from transformers.utils import logging
-from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
-import torch
-import torch.nn as nn
-import os
-import gc
-import copy
-import json
-import wandb
-from typing import Callable, List, Optional, Tuple, Union, Any
-import math
-from configuration_split import SplitConfig
-
-logger = logging.get_logger(__name__)
-
-instruction_prefix = "Think step by step: please provide an efficient and self-contained Python script that solves the following problem in a markdown code block:"
-response_prefix = "Below is a Python script with a self-contained function that efficiently solves the problem and passes corresponding tests:"
-_MAGIC_SPLITTER_ = "-[[]]-this-is-really-our-highest-priority-[[]]-"
-
-def make_chat_prompt(
-    task_prompt: str,
-    instruction_prefix: str,
-    response_prefix: str,
-    tokenizer: AutoTokenizer,
-) -> str:
-    # directly return prompt if it does not have a tokenizer.chat_template
-    if tokenizer.chat_template is None:
-        return task_prompt
-
-    assert instruction_prefix is not None, "Instruction prefix is required!"
-    assert response_prefix is not None, "Response prefix is required!"
-
-    task_prompt = f"""\
-{instruction_prefix}
-```
-{task_prompt.strip()}
-```
-"""
-    response = f"""\
-{response_prefix}
-```python
-{_MAGIC_SPLITTER_}
-```
-"""
-    task_prompt = tokenizer.apply_chat_template(
-        [
-            {"role": "user", "content": task_prompt},
-            {"role": "assistant", "content": response},
-        ],
-        tokenize=False,
-    ).split(_MAGIC_SPLITTER_)[0]
-    return task_prompt
-
-def get_code_completion(prefix, suffix):
-    text = prompt = f"""<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>"""
-    #model.eval()
-    return text
-    
-def init_weights(model):
-    for name, param in model.named_parameters():
-        if "bias" in name:
-            if "alpha_proj" in name:
-                # Initialize alpha projection bias to small positive values
-                # This ensures log_alpha starts with reasonable values
-                torch.nn.init.constant_(param, 0.1)  # Small positive bias
-            else:
-                torch.nn.init.zeros_(param)
-        elif "weight" in name:
-            if param.dim() > 1:
-                if "nvib_layer" in name and "alpha_proj" in name:
-                    # Initialize alpha projection weights with smaller values
-                    # Use Kaiming initialization with smaller gain
-                    torch.nn.init.kaiming_normal_(param, a=0.1)
-                    # Scale down the weights to prevent extreme values
-                    with torch.no_grad():
-                        param *= 0.1
-                else:
-                    torch.nn.init.xavier_uniform_(param)
-            else:
-                torch.nn.init.normal_(param, mean=0.0, std=0.02)
-
-def weighted_mean(kl_list, weighted_mean=False):
-    if weighted_mean:
-        weights = [i for i in range(1, len(kl_list) + 1)]
-        # weights = [(2**i) for i in range(0, len(kl_list))]
-    else:  # Equal weighted Mean
-        weights = [1 for i in range(0, len(kl_list))]
-
-    weights = [weight / (sum(weights)) for weight in weights]
-    return sum([torch.mean(kl_layer) * weights[i] for i, kl_layer in enumerate(kl_list)])
-
-class kl_annealing:
-    def __init__(
-        self,
-        end_of_warmup,
-        wait_before_warmup=0,
-        annealing_value_start=0,
-        annealing_value_end=1,
-        type="linear",
-    ):
-        self.annealing_value_start = annealing_value_start
-        self.annealing_value_end = annealing_value_end
-        self.end_of_warmup = end_of_warmup
-        self.type = type
-        self.wait_before_warmup = wait_before_warmup
-
-    def __call__(self, step):
-        # Linear annealing
-        if self.type == "linear":
-            if step < self.wait_before_warmup:
-                return self.annealing_value_start
-            elif step < self.end_of_warmup:
-                return (step - self.wait_before_warmup) / (
-                    self.end_of_warmup - self.wait_before_warmup
-                )
-            else:
-                return self.annealing_value_end
-        else:
-            # Constant
-            return self.annealing_value_end
+from update_causal_mask import _prepare_4d_causal_attention_mask_with_cache_position
+from support_split_model import init_weights, weighted_mean
+from kl_annealing import kl_annealing
 
 class SplitModel(PreTrainedModel, GenerationMixin):
     config_class = SplitConfig
     def __init__(self, config):
         super().__init__(config)
     
-
+############################################## Main Class ##############################################
 class SplitModelForCausalLM(SplitModel):
-
     def __init__(self, config: SplitConfig):
         super().__init__(config)
-
+        
+        # Initialize base model with correct dtype from the start
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.gradient_checkpointing = False
-        
-        ref_config = AutoConfig.from_pretrained(config.base_model_path)
-        ref_config.tie_word_embeddings = False
-        reference_model = AutoModelForCausalLM.from_config(
-            ref_config,
-            torch_dtype=torch.bfloat16
+        reference_model = AutoModelForCausalLM.from_pretrained(
+            config.base_model_path, torch_dtype=torch.bfloat16
         )
-        
-        # Initialize middle model from config if specified
-        if config.middle_model_path is not None:
-            middle_config = AutoConfig.from_pretrained(config.middle_model_path)
-            self.middle_model = AutoModel.from_config(
-                middle_config,
-                torch_dtype=torch.bfloat16
-            )
-        else:
-            self.middle_model = None
-        
+        self.middle_model = (
+            AutoModel.from_pretrained(config.middle_model_path, torch_dtype=torch.bfloat16)
+            if config.middle_model_path else None
+        )
         self.model = reference_model.model
         self.lm_head = reference_model.lm_head
         if self.lm_head.weight.data_ptr() == self.model.embed_tokens.weight.data_ptr():
@@ -251,7 +108,7 @@ class SplitModelForCausalLM(SplitModel):
             kl_annealing(
                 annealing_value_start=0,
                 annealing_value_end=1,
-                wait_before_warmup=300,
+                wait_before_warmup=200,
                 end_of_warmup=600,
                 # wait_before_warmup=0,
                 # end_of_warmup=0,
@@ -376,12 +233,12 @@ class SplitModelForCausalLM(SplitModel):
             if layer_type == 'nvib1':
                 encoder_hidden_states = hidden_states
                 hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, 0, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg1"
+                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, self.kl_step, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg1"
                 )
             elif layer_type == 'nvib2':
                 hidden_states = self.middle_model.norm(hidden_states)
                 hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, 0, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg2"
+                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, self.kl_step, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg2"
                 )
                 hidden_states = hidden_states + encoder_hidden_states
             else:  # 'client' or 'middle' layers
@@ -491,7 +348,7 @@ class SplitModelForCausalLM(SplitModel):
         kl_list_name=None,  
     ):
         src_key_padding_mask = ~(attention_mask.bool())
-        memory, attention, klg_vals, kld_vals, latent_dict = encoder(
+        hidden_states, attention, klg_vals, kld_vals, latent_dict = encoder(
             hidden_states, src_key_padding_mask=src_key_padding_mask, kl_list_name=kl_list_name
         )
         kl_factor = kl_annealing_scheduler(kl_step)
@@ -514,7 +371,8 @@ class SplitModelForCausalLM(SplitModel):
                 })
             except Exception as e:
                 print(f"Warning: Could not log KL metrics: {e}")
-        return memory, attention, kld, klg, latent_dict
+        return hidden_states, attention, kld, klg, latent_dict
+
 
     def _update_causal_mask(
         self,
@@ -528,14 +386,14 @@ class SplitModelForCausalLM(SplitModel):
             if attention_mask is not None and 0.0 in attention_mask:
                 return attention_mask
             return None
-
+    
         # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
         # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
         # to infer the attention mask.
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         using_static_cache = isinstance(past_key_values, StaticCache)
         using_sliding_window_cache = isinstance(past_key_values, SlidingWindowCache)
-
+    
         # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
         if (
             self.config._attn_implementation == "sdpa"
@@ -550,7 +408,7 @@ class SplitModelForCausalLM(SplitModel):
                 is_training=self.training,
             ):
                 return None
-
+    
         dtype, device = input_tensor.dtype, input_tensor.device
         min_dtype = torch.finfo(dtype).min
         sequence_length = input_tensor.shape[1]
@@ -564,9 +422,9 @@ class SplitModelForCausalLM(SplitModel):
                 if isinstance(attention_mask, torch.Tensor)
                 else past_seen_tokens + sequence_length + 1
             )
-
+    
         # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
-        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
+        causal_mask = _prepare_4d_causal_attention_mask_with_cache_position(
             attention_mask,
             sequence_length=sequence_length,
             target_length=target_length,
@@ -577,7 +435,7 @@ class SplitModelForCausalLM(SplitModel):
             config=self.config,
             past_key_values=past_key_values,
         )
-
+    
         if causal_mask is not None:
             # Fix extreme values that cause NaN
             if causal_mask.dtype == torch.bfloat16:
@@ -586,7 +444,7 @@ class SplitModelForCausalLM(SplitModel):
             else:
                 # For other dtypes, use standard range
                 causal_mask = torch.clamp(causal_mask, min=-1e9, max=0)
-
+    
         if (
             self.config._attn_implementation == "sdpa"
             and attention_mask is not None
@@ -597,148 +455,5 @@ class SplitModelForCausalLM(SplitModel):
             # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
             # Details: https://github.com/pytorch/pytorch/issues/110213
             causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
-
+    
         return causal_mask
-    @staticmethod
-    def _prepare_4d_causal_attention_mask_with_cache_position(
-        attention_mask: torch.Tensor,
-        sequence_length: int,
-        target_length: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        cache_position: torch.Tensor,
-        batch_size: int,
-        config: SplitConfig,
-        past_key_values: Cache,
-    ):
-        """
-        Creates a causal 4D mask of shape `(batch_size, 1, query_length, key_value_length)` from a 2D mask of shape
-        `(batch_size, key_value_length)`, or if the input `attention_mask` is already 4D, do nothing.
-
-        Args:
-            attention_mask (`torch.Tensor`):
-                A 2D attention mask of shape `(batch_size, key_value_length)` or a 4D attention mask of shape `(batch_size, 1, query_length, key_value_length)`.
-            sequence_length (`int`):
-                The sequence length being processed.
-            target_length (`int`):
-                The target length: when generating with static cache, the mask should be as long as the static cache, to account for the 0 padding, the part of the cache that is not filled yet.
-            dtype (`torch.dtype`):
-                The dtype to use for the 4D attention mask.
-            device (`torch.device`):
-                The device to plcae the 4D attention mask on.
-            cache_position (`torch.Tensor`):
-                Indices depicting the position of the input sequence tokens in the sequence.
-            batch_size (`torch.Tensor`):
-                Batch size.
-            config (`Qwen2Config`):
-                The model's configuration class
-            past_key_values (`Cache`):
-                The cache class that is being used currently to generate
-        """
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # In this case we assume that the mask comes already in inverted form and requires no inversion or slicing.
-            causal_mask = attention_mask
-        else:
-            min_dtype = torch.finfo(dtype).min
-            causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-            )
-            diagonal_attend_mask = torch.arange(target_length, device=device, dtype=dtype) > cache_position.reshape(-1, 1)
-            if config.sliding_window is not None:
-                # if we have sliding window, we should not attend to tokens beyond sliding window length, so we mask them out also
-                # the check is needed to verify is current checkpoint was trained with sliding window or not
-                if not isinstance(past_key_values, SlidingWindowCache) or sequence_length > target_length:
-                    sliding_attend_mask = torch.arange(target_length, device=device, dtype=dtype) <= (
-                        cache_position.reshape(-1, 1) - config.sliding_window
-                    )
-                    diagonal_attend_mask |= sliding_attend_mask
-            causal_mask *= diagonal_attend_mask
-            causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
-            if attention_mask is not None:
-                causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                if attention_mask.shape[-1] > target_length:
-                    attention_mask = attention_mask[:, :target_length]
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-                padding_mask = padding_mask == 0
-                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                    padding_mask, min_dtype
-                )
-        return causal_mask
-    
-def inference(
-    # model/data params
-    # base_model_path: str = f"/project/phan/codellama/CodeQwen1.5-7B-Chat",  # the only required argument
-    # base_model_path: str = f"/mmfs1/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-nvib2-save/checkpoint-85440",  # the only required argument
-    base_model_path: str = f"/mmfs1/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-skip-connection-llama-Qwen-100k/checkpoint-14100",  # the only required argument
-    # base_model_path = "/mmfs1/project/phan/codellama/FintunnedModel7B/CodeQwen_eps27_400k_tokenizerDP/checkpoint-82002",
-    prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
-):
-    prompter = Prompter(prompt_template_name)
-    # Register the model classes
-    AutoConfig.register("split", SplitConfig)
-    AutoModel.register(SplitConfig, SplitModel)
-    AutoModelForCausalLM.register(SplitConfig, SplitModelForCausalLM)
-    
-    print(f"Loading model from: {base_model_path}")
-    
-    # Load the model using from_pretrained
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_path,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-        trust_remote_code=True,
-        use_safetensors=True  # Use safetensors since that's what the checkpoint uses
-    )
-
-      
-    # Ensure model is in evaluation mode
-    model.eval()
-    
-    tokenizer = AutoTokenizer.from_pretrained(base_model_path)
-
-    # Now test with the actual prompt
-    prompt = "Write a python code to sum two numbers"
-    prompt =  prompter.generate_prompt(
-                   prompt,
-                    "",
-                    "",
-                )
-    temp = make_chat_prompt(prompt,instruction_prefix, response_prefix, tokenizer)
-    print(temp)
-    
-    
-    model_inputs = tokenizer([temp], return_tensors="pt").to(model.device)
-    attention_mask = model_inputs.attention_mask
-    # model_inputs['labels'] = model_inputs['input_ids']
-    # outputs = model(**model_inputs)
-    # loss = outputs.loss
-    # loss.backward()
-
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         grad_norm = param.grad.norm().item()
-    #         print(f"{name}: grad norm = {grad_norm}")
-            
-    #         if torch.all(param.grad == 0):
-    #             print(f"\033[91m{name}: gradient is exactly zero!\033[0m")
-    # exit()
-    
-    with torch.no_grad():
-        generated_ids = model.generate(model_inputs.input_ids,attention_mask=attention_mask, max_new_tokens=1024)
-        # The generated_ids include prompt_ids, we only need to decode the tokens after prompt_ids.
-        
-        generated_ids = [
-            output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-        ]
-    
-    output_text = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-    print(output_text)
-    exit()
-
-
-def main():
-    inference()
-
-if __name__ == "__main__":
-    main()
