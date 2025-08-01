@@ -202,8 +202,8 @@ class Nvib(nn.Module):
             std = torch.exp(0.5 * logvar)  # [Nl,B,H]
             eps = torch.randn_like(std)  # [Nl,B,H]
             z = eps.mul(std).add_(mu)  # [Nl,B,H]
+            
             # Clean up intermediate tensors to free GPU memory
-            del std, eps
         else:
             z = mu  # [Nl,B,H]
         return z  # [Nl,B,H]
@@ -233,8 +233,8 @@ class Nvib(nn.Module):
         normalising_sum = torch.sum(gammas, 0).unsqueeze(0) + torch.finfo(gammas.dtype).tiny
         pi = torch.div(gammas, normalising_sum)
 
-        if self.training:
-            del gamma_dist
+        # if self.training:
+        #     del gamma_dist
 
         return pi
                 
@@ -365,7 +365,7 @@ class Nvib(nn.Module):
         ) / n
 
         # Clean up intermediate tensors
-        del alpha0_q, alpha0_p, k0, n, lowerBound
+        # del alpha0_q, alpha0_p, k0, n, lowerBound
         # torch.cuda.empty_cache()
 
         # Convert to float32 only at the end
@@ -451,7 +451,7 @@ class Nvib(nn.Module):
             unknown_mask = torch.zeros_like(mask[0:1, :, :], dtype=bool, device=self.device)
             mask = torch.cat((unknown_mask, mask), 0)            
         # Clean up intermediate tensors to free GPU memory
-        del unknown_mu, unknown_logvar, unknown_log_alpha, unknown_mask
+        # del unknown_mu, unknown_logvar, unknown_log_alpha, unknown_mask
 
 
         # Multi sample
@@ -482,7 +482,7 @@ class Nvib(nn.Module):
             alpha = alpha.view(Nl * self.kappa, B, 1)  # [kappa*Nl,B,1]
 
             # Clean up intermediate tensors to free GPU memory
-            del rho, sub_rho
+            # del rho, sub_rho
         else:
             # Reparameterise
             z = self.reparameterize_gaussian(mu, logvar)
