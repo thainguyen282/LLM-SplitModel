@@ -1,4 +1,4 @@
-import torch
+    import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import gc
@@ -31,8 +31,7 @@ class SplitModel(PreTrainedModel, GenerationMixin):
     config_class = SplitConfig
     def __init__(self, config):
         super().__init__(config)
-    
-############################################## Main Class ##############################################
+        
 class SplitModelForCausalLM(SplitModel):
     def __init__(self, config: SplitConfig):
         super().__init__(config)
@@ -202,8 +201,7 @@ class SplitModelForCausalLM(SplitModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
-
-############################################################# custom code start here #############################################################
+    
         kld = torch.tensor(0.0, device=hidden_states.device)
         klg = torch.tensor(0.0, device=hidden_states.device)
         # blue print
