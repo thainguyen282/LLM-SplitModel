@@ -49,8 +49,13 @@ def train(
     cutoff_len: int = 4000,
     val_set_size: int = 500,
     warmup_steps: int = 750,
-    gradient_accumulation_steps: int = 16
-  
+    gradient_accumulation_steps: int = 16, 
+    lora_r: int = 8,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.05,
+    lora_target_modules: List[str] = [
+        'q_proj','k_proj','v_proj','o_proj','gate_proj','down_proj','up_proj',
+    ],
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
     group_by_length: bool = False,  # faster, but produces an odd training loss curve
