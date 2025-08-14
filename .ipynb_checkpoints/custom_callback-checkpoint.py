@@ -39,3 +39,6 @@ class MemoryCleanupCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         gc.collect()
         torch.cuda.empty_cache()
+    def on_prediction_step(self, args, state, control, **kwargs):
+        gc.collect()
+        torch.cuda.empty_cache()

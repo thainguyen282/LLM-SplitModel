@@ -670,7 +670,7 @@ def inference(
     # model/data params
     # base_model_path: str = f"/project/phan/codellama/CodeQwen1.5-7B-Chat",  # the only required argument
     # base_model_path: str = f"/mmfs1/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-nvib2-save/checkpoint-85440",  # the only required argument
-    base_model_path: str = f"/mmfs1/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-skip-connection-llama-Qwen-100k/checkpoint-14100",  # the only required argument
+    base_model_path: str = f"/project/phan/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-final-2nd/checkpoint-4500",  # the only required argument
     # base_model_path = "/mmfs1/project/phan/codellama/FintunnedModel7B/CodeQwen_eps27_400k_tokenizerDP/checkpoint-82002",
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 ):

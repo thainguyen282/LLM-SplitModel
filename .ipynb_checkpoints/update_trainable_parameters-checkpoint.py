@@ -2,19 +2,6 @@ import torch
 
 def update_trainable_parameters(model, tokenizer):
     model.to(device="cuda" if torch.cuda.is_available() else "cpu",dtype=torch.bfloat16)  # Only convert device, dtype is already correct
-    # model.config.pad_token_id = tokenizer.pad_token_id
-    # model.config.eos_token_id = tokenizer.eos_token_id
-    # model.config.bos_token_id = tokenizer.bos_token_id
-    # tokenizer.pad_token_id = tokenizer.bos_token_id
-    # model.generation_config.pad_token_id = tokenizer.bos_token_id
-    # model.generation_config.eos_token_id = model.config.eos_token_id
-    # model.generation_config.bos_token_id = tokenizer.bos_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
-    model.config.bos_token_id = tokenizer.bos_token_id
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    model.generation_config.pad_token_id = model.config.pad_token_id
-    model.generation_config.eos_token_id = model.config.eos_token_id
-    model.generation_config.bos_token_id = model.config.bos_token_id
     print(model.device)
     total_param = 0
     trainable_param = 0
@@ -40,7 +27,7 @@ def update_trainable_parameters(model, tokenizer):
         param.requires_grad = True
         trainable_param += param.numel()
 
-    model.model.embed_tokens.weight.requires_grad_(True)
+    # model.model.embed_tokens.weight.requires_grad_(True)
 
     print(f'Total Parameters: {total_param:,}')
     print(f'Trainable Parameters: {trainable_param:,}')

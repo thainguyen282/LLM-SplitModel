@@ -137,7 +137,7 @@ class SplitConfig(PretrainedConfig):
 
         ##################### Qwen2.5-7B #####################
         attention_dropout=0.0,
-        bos_token_id= 151643,
+        bos_token_id= 72238,
         eos_token_id= 151645,
         hidden_act= "silu",
         hidden_size= 3584,
