@@ -4,6 +4,7 @@ import fire
 import wandb
 import random
 from typing import List
+from torch import nn
 
 from datasets import load_dataset
 import transformers
@@ -16,13 +17,14 @@ from transformers import (
     TrainingArguments,
     DataCollatorForSeq2Seq,
 )
+from utils.prompter import Prompter
 from peft import (
     LoraConfig,
     get_peft_model,
     get_peft_model_state_dict,
     set_peft_model_state_dict,
 )
-from utils.prompter import Prompter
+
 from transformers.utils import logging
 
 # Local imports
@@ -39,8 +41,10 @@ def train(
     # model/data params
     base_model_path: str = f"Qwen/Qwen2.5-Coder-7B-Instruct",
     middle_model_path: str = f"meta-llama/Llama-3.1-8B-Instruct",
+    # data_path: str = "/project/phan/codellama/datasets/PGCodeTrainingCombined",
     data_path: str = "/project/phan/codellama/datasets/PGCodeTraining100k",
-    output_dir: str = f"./temp-with-Qwen-Llama-100k/",
+    # data_path: str = "iamtarun/python_code_instructions_18k_alpaca",
+    output_dir: str = f"./temp-with-Qwen-Llama-eps27/",
     # training hyperparams
     batch_size: int = 1,
     micro_batch_size: int = 1,
@@ -64,11 +68,12 @@ def train(
     wandb_run_name: str = "",   
     wandb_watch: str = "",  # options: false | gradients | all
     wandb_log_model: str = "",  # options: false | true
-    resume_from_checkpoint: str = False,  # either training checkpoint or final adapter
+    # resume_from_checkpoint: str = "/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-final-2nd/checkpoint-3600",  # either training checkpoint or final adapter
+    resume_from_checkpoint: str = None,
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 
     #data preprocessing hyperparams
-    using_raw_data = True
+    using_raw_data = False
 ):
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         print(
@@ -126,42 +131,53 @@ def train(
     AutoModelForCausalLM.register(SplitConfig, SplitModelForCausalLM)
     config = SplitConfig(
         base_model_path=base_model_path, 
+        middle_model_path=middle_model_path,
     )
     model = SplitModelForCausalLM(config=config)
     model.is_parallelizable = True
     model.model_parallel = True
     model.train()
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model_path)
-    tokenizer.padding_side = "left" 
-    # tokenizer = AutoTokenizer.from_pretrained(f"../dictionary")
+   #tokenizer = AutoTokenizer.from_pretrained(config.base_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        # model_args.model_name_or_path,
+        # f"../../../tokenizerDP/Qwen2.5",
+        f"/project/phan/codellama/tokenizerDP/Qwen2.5",
+        # pad_token = '<|endoftext|>',
+        # eos_token = '<|im_end|>', #<|endoftext|>
+        # #cache_dir = "/mmfs1/project/phan/codellama/codellama/Qwen2.5-32B/",
+        # #model_max_length = training_args.model_max_length,
+        # #truncation = True,
+        # use_fast=False,
+        # padding_side = "right",
+        # trust_remote_code = True
+    )
+
+    tokenizer.padding_side = "right" 
+
+    def update_model(eps, model, save_dir):
+        device = model.device
+        if eps != 0:
+            file_name = f"./Qwen2.5_eps27.0_final.pt"
+            # file_name = f"./original_new.pt"
+            # file_name = f"CodeQwen_eps{eps}_new.pt"
+            file_path = os.path.join(save_dir,file_name)
+            new = torch.load(file_path)
+            newEmbed = nn.Embedding(model.config.vocab_size, model.config.hidden_size, _weight=new.to(device))
+            model.model.set_input_embeddings(newEmbed)
+
+    save_dir=f"/project/phan/codellama/Tensor/Qwen2.5-Coder"
+    update_model(27, model, save_dir)
+    model.config.bos_token_id = 72238
+    model.config.eos_token_id = tokenizer.eos_token_id
+    model.generation_config.bos_token_id = 72238
+    model.generation_config.eos_token_id = tokenizer.eos_token_id
+    model.generation_config.pad_token_id = tokenizer.pad_token_id
     update_trainable_parameters(model, tokenizer)
 
     #loading data
     loader = LoadData(data_path, tokenizer, prompter, cutoff_len, train_on_inputs, using_raw_data, val_set_size)
     train_data = loader.train_data
     val_data = loader.val_data
-    
-    if resume_from_checkpoint:
-        train_data = load_dataset('json', data_files="./data/train_data_llama.json")["train"]
-        val_data = load_dataset('json', data_files="./data/val_data_llama.json")["train"]
-        # Check the available weights and load them
-        checkpoint_name = os.path.join(
-            resume_from_checkpoint, "pytorch_model.bin"
-        )  # Full checkpoint
-        if not os.path.exists(checkpoint_name):
-            checkpoint_name = os.path.join(
-                resume_from_checkpoint, "adapter_model.bin"
-            )  # only LoRA model - LoRA config above has to fit
-            resume_from_checkpoint = (
-                False  # So the trainer won't try loading its state
-            )
-        # The two files above have a different name depending on how they were saved, but are actually the same.
-        if os.path.exists(checkpoint_name):
-            print(f"Restarting from {checkpoint_name}")
-            adapters_weights = torch.load(checkpoint_name)
-            #model = set_peft_model_state_dict(model, adapters_weights)
-        else:
-            print(f"Checkpoint {checkpoint_name} not found")
     
     trainer = transformers.Trainer(
         model=model,  
@@ -179,10 +195,10 @@ def train(
             optim="adamw_torch",
             eval_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
-            eval_steps= 100 if val_set_size > 0 else None,
-            save_steps=300,
+            eval_steps=500 if val_set_size > 0 else None,
+            save_steps=500,
             output_dir=output_dir,
-            save_total_limit=2,
+            save_total_limit=3,
             load_best_model_at_end=True if val_set_size > 0 else False,
             ddp_find_unused_parameters=False if ddp else None,
             report_to="wandb" if use_wandb else None,

@@ -60,6 +60,7 @@ class LoadData:
             system = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
 
         temp_prompt = data_point["output"].split(":")[0] + ":\n" + self.template.format(data_point["instruction"])
+        
         output = data_point["output"]
 
         temp_tokenizer = self.tokenizer(
@@ -108,7 +109,7 @@ class LoadData:
             messages = make_chat_prompt(temp_prompt, instruction_prefix, response_prefix, self.tokenizer)
             middle = self.tokenizer.batch_decode(
                 [temp_tokenizer["input_ids"][random_numbers[0]:random_numbers[1]]],
-                skip_special_tokens=False
+                skip_special_tokens=FalseF
             )[0]
             messages += middle
 
@@ -125,60 +126,82 @@ class LoadData:
 
         return tokenized_full_prompt
 
-    def generate_and_tokenize_prompt(self, data_point):
-        if data_point["input"] != "":
-            system = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
-        else:
-            system = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
+    def generate_and_tokenize_prompt(self, batch):
 
-        full_prompt = self.prompter.generate_prompt(
-            data_point["instruction"],
-            data_point["input"],
-            "",
-        )
-
-        messages = make_chat_prompt(
-            full_prompt[len(system)+2:], instruction_prefix, response_prefix, self.tokenizer
-        )
-
-        messages += data_point["output"]
-        tokenized_full_prompt = self.tokenize(messages)
-
-        if not self.train_on_inputs:
-            user_prompt = self.prompter.generate_prompt(
-                data_point["instruction"], data_point["input"]
+        input_ids_list = []
+        attention_mask_list = []
+        labels_list = []
+        
+        for instruction, input_text, output in zip(batch["instruction"], batch["input"], batch["output"]):
+            if input_text != "":
+                system = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
+            else:
+                system = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
+    
+            full_prompt = self.prompter.generate_prompt(
+                instruction,
+                input_text,
+                "",
             )
-            tokenized_user_prompt = self.tokenize(user_prompt, add_eos_token=False)
-            user_prompt_len = len(tokenized_user_prompt["input_ids"])
+    
+            messages = make_chat_prompt(
+                full_prompt[len(system)+2:], instruction_prefix, response_prefix, self.tokenizer
+            )
 
-            tokenized_full_prompt["labels"] = [-100] * user_prompt_len + tokenized_full_prompt["labels"][user_prompt_len:]
+            if isinstance(output,list):
+                messages += "".join(output)
+            else:
+                messages += output
 
-        return tokenized_full_prompt
+            #print(messages)
+            #exit()
+            tokenized_full_prompt = self.tokenize(messages)
+    
+            if not self.train_on_inputs:
+                user_prompt = self.prompter.generate_prompt(
+                    instruction, input_text
+                )
+                tokenized_user_prompt = self.tokenize(user_prompt, add_eos_token=False)
+                user_prompt_len = len(tokenized_user_prompt["input_ids"])
+    
+                tokenized_full_prompt["labels"] = [-100] * user_prompt_len + tokenized_full_prompt["labels"][user_prompt_len:]
+                
+            # Append tokenized data to respective lists
+            input_ids_list.append(tokenized_full_prompt["input_ids"])
+            attention_mask_list.append(tokenized_full_prompt["attention_mask"])
+            labels_list.append(tokenized_full_prompt["labels"])
+    
+            #return tokenized_full_prompt
+        return {
+            "input_ids": input_ids_list,
+            "attention_mask": attention_mask_list,
+            "labels": labels_list,
+        }
 
     def _load_dataset(self):
         if not self.using_raw_data:
-            train_data = load_dataset('json', data_files="./data/train_data_qwen_100k.json")["train"]
-            val_data = load_dataset('json', data_files="./data/val_data_qwen_100k.json")["train"]
+            train_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_eps27.json")["train"]
+            val_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_eps27.json")["train"]
         else:
             if self.data_path.endswith(".json") or self.data_path.endswith(".jsonl"):
                 data = load_dataset("json", data_files=self.data_path)
             else:
                 data = load_from_disk(self.data_path)
-
-
+            train_val = data["train"].train_test_split(
+                test_size=self.val_set_size, shuffle=True, seed=42
+            )
             if self.val_set_size > 0:
-                train_val = data["train"].train_test_split(
-                    test_size=self.val_set_size, shuffle=True, seed=42
-                )
-
-                train_data = train_val["train"].shuffle().map(self.generate_and_tokenize_prompt)
-                val_data = train_val["test"].shuffle().map(self.generate_and_tokenize_prompt)
+                train_data = train_val["train"].shuffle().map(self.generate_and_tokenize_prompt,batched=True, num_proc=128)
+                val_data = train_val["test"].shuffle().map(self.generate_and_tokenize_prompt,batched=True, num_proc=128)
             else:
-                train_data = data["train"].shuffle().map(self.generate_and_tokenize_prompt)
+                train_data = data["train"].shuffle().map(self.generate_and_tokenize_prompt,batched=True, num_proc=128)
                 val_data = None
-
-            train_data.to_json("data/train_data_qwen_100k.json")
+            
+            train_data.to_json("/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_eps27.json")
             if val_data:
-                val_data.to_json("data/val_data_qwen_100k.json")
+                val_data.to_json("/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_eps27.json")
 
         return train_data, val_data
+
+
+       
