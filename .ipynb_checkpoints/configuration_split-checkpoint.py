@@ -136,8 +136,9 @@ class SplitConfig(PretrainedConfig):
         base_model_path: str = "Qwen/Qwen2.5-Coder-7B-Instruct",
 
         ##################### Qwen2.5-7B #####################
+        attn_implementation="flash_attention_2",
         attention_dropout=0.0,
-        bos_token_id= 72238,
+        bos_token_id= 151643,
         eos_token_id= 151645,
         hidden_act= "silu",
         hidden_size= 3584,
@@ -156,6 +157,8 @@ class SplitConfig(PretrainedConfig):
         torch_dtype= "bfloat16",
         vocab_size= 152064,
         use_cache=False,
+        layer_types=None, 
+        max_window_layers=28,
 
         ##################### LLama3.1 #####################
         # attention_dropout=0.0,
@@ -239,6 +242,7 @@ class SplitConfig(PretrainedConfig):
         # middle_model_path: str = "/project/phan/codellama/FintunnedModel7B/CodeQwen_eps27_400k_tokenizerDP/checkpoint-82002",
         **kwargs ,
     ):
+        self.attn_implementation = attn_implementation
         self.vocab_size = vocab_size
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
@@ -249,7 +253,7 @@ class SplitConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None
-        # self.max_window_layers = max_window_layers
+        self.max_window_layers = max_window_layers
 
         # for backward compatibility
         if num_key_value_heads is None:
@@ -269,15 +273,15 @@ class SplitConfig(PretrainedConfig):
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self)
-        # self.layer_types = layer_types
-        # if self.layer_types is None:
-        #     self.layer_types = [
-        #         "sliding_attention"
-        #         if self.sliding_window is not None and i >= self.max_window_layers
-        #         else "full_attention"
-        #         for i in range(self.num_hidden_layers)
-        #     ]
-        # layer_type_validation(self.layer_types)
+        self.layer_types = layer_types
+        if self.layer_types is None:
+            self.layer_types = [
+                "sliding_attention"
+                if self.sliding_window is not None and i >= self.max_window_layers
+                else "full_attention"
+                for i in range(self.num_hidden_layers)
+            ]
+        layer_type_validation(self.layer_types)
 
         self.base_model_path = base_model_path
         self.enc_num_layers = enc_num_layers

@@ -53,77 +53,6 @@ class LoadData:
         result["labels"] = result["input_ids"].copy()
         return result
 
-    def generate_and_tokenize_prompt_auto_completion(self, data_point):
-        if data_point["input"] != "":
-            system = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
-        else:
-            system = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
-
-        temp_prompt = data_point["output"].split(":")[0] + ":\n" + self.template.format(data_point["instruction"])
-        
-        output = data_point["output"]
-
-        temp_tokenizer = self.tokenizer(
-            output,
-            truncation=True,
-            max_length=self.cutoff_len,
-            padding=False,
-            return_tensors=None,
-        )
-
-        if len(temp_tokenizer["input_ids"]) == 1:
-            full_prompt = self.prompter.generate_prompt(
-                data_point["instruction"],
-                data_point["input"],
-                "",
-            )
-            messages = make_chat_prompt(
-                full_prompt[len(system)+2:], instruction_prefix, response_prefix, self.tokenizer
-            ) + output
-        else:
-            random_numbers = sorted(random.sample(range(0, len(temp_tokenizer["input_ids"])), k=2))
-            prefix = self.tokenizer.batch_decode(
-                [temp_tokenizer["input_ids"][:random_numbers[0]]],
-                skip_special_tokens=False
-            )[0] if random_numbers[0] > 0 else self.tokenizer.batch_decode(
-                [temp_tokenizer["input_ids"][random_numbers[0]]],
-                skip_special_tokens=False
-            )[0]
-
-            suffix = (
-                "\"\"\""
-                if random_numbers[1] == len(temp_tokenizer["input_ids"])
-                else self.tokenizer.batch_decode(
-                    [temp_tokenizer["input_ids"][random_numbers[1]:]],
-                    skip_special_tokens=False
-                )[0]
-            )
-
-            temp_prompt = get_code_completion(prefix, suffix)
-            temp_prompt = self.prompter.generate_prompt(
-                temp_prompt,
-                data_point["input"],
-                "",
-            )
-
-            messages = make_chat_prompt(temp_prompt, instruction_prefix, response_prefix, self.tokenizer)
-            middle = self.tokenizer.batch_decode(
-                [temp_tokenizer["input_ids"][random_numbers[0]:random_numbers[1]]],
-                skip_special_tokens=FalseF
-            )[0]
-            messages += middle
-
-        tokenized_full_prompt = self.tokenize(messages)
-
-        if not self.train_on_inputs:
-            user_prompt = self.prompter.generate_prompt(
-                data_point["instruction"], data_point["input"]
-            )
-            tokenized_user_prompt = self.tokenize(user_prompt, add_eos_token=False)
-            user_prompt_len = len(tokenized_user_prompt["input_ids"])
-
-            tokenized_full_prompt["labels"] = [-100] * user_prompt_len + tokenized_full_prompt["labels"][user_prompt_len:]
-
         return tokenized_full_prompt
 
     def generate_and_tokenize_prompt(self, batch):
@@ -180,8 +109,8 @@ class LoadData:
 
     def _load_dataset(self):
         if not self.using_raw_data:
-            train_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_eps27.json")["train"]
-            val_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_eps27.json")["train"]
+            train_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_100k.json")["train"]
+            val_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_100k.json")["train"]
         else:
             if self.data_path.endswith(".json") or self.data_path.endswith(".jsonl"):
                 data = load_dataset("json", data_files=self.data_path)
@@ -204,4 +133,3 @@ class LoadData:
         return train_data, val_data
 
 
-       
