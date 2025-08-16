@@ -232,8 +232,8 @@ class SplitConfig(PretrainedConfig):
         kappa: float = 1,
         delta: float = 0.4,
         weighted_kl: bool = True,
-        lambda_kld: float = 1,
-        lambda_klg: float = 0.001,
+        lambda_kld: float = 0,
+        lambda_klg: float = 0,
         # server's model params
         compress_dim: int = 4096,
         compress_intermediate_size: int = 14336,

@@ -36,7 +36,6 @@ class SplitModelForCausalLM(SplitModel):
         super().__init__(config)
         
         # Initialize base model with correct dtype from the start
-        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         reference_model = AutoModelForCausalLM.from_pretrained(
             config.base_model_path, torch_dtype=torch.bfloat16, attn_implementation=config.attn_implementation, device_map="auto"
@@ -46,6 +45,8 @@ class SplitModelForCausalLM(SplitModel):
             if config.middle_model_path else None
         )
         self.model = reference_model.model
+        unused_layers = self.model.layers[config.enc_num_layers:-config.dec_num_layers]
+        self.model.layers = nn.ModuleList(list(self.model.layers[:config.enc_num_layers]) + list(self.model.layers[-config.dec_num_layers:]))
         self.lm_head = reference_model.lm_head
 
         # split model params
@@ -113,7 +114,9 @@ class SplitModelForCausalLM(SplitModel):
         self.kld = None
         self.klg = None
         del reference_model
+        del unused_layers
         gc.collect()
+        torch.cuda.empty_cache()
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -147,54 +150,69 @@ class SplitModelForCausalLM(SplitModel):
 
         kld = torch.tensor(0.0, device=hidden_states.device)
         klg = torch.tensor(0.0, device=hidden_states.device)
-        # blue print
-        layer_sequence = []
-        for i in range(self.enc_num_layers):
-            layer_sequence.append(('client', i, self.model.layers[i]))
-        if self.is_nvib:    
-            layer_sequence.append(('nvib1', None, self.nvib_transformer_adapter1))
-        if self.is_merge:
-            for i, middle_layer in enumerate(self.middle_model.layers):
-                layer_sequence.append(('middle', i, middle_layer))
-        for i in range(self.enc_num_layers, self.num_hidden_layers):
-            if self.is_merge:
-                if i < self.num_hidden_layers - self.dec_num_layers:
-                    continue
-            if i == self.num_hidden_layers - self.dec_num_layers and self.is_nvib:
-                layer_sequence.append(('nvib2', None, self.nvib_transformer_adapter2))
-
-            layer_sequence.append(('client', i, self.model.layers[i]))
-
-        # start forward
         encoder_hidden_states = None
-        for layer_type, layer_idx, layer in layer_sequence:
-            print(f"layer {layer_type} {layer_idx}")
-            if layer_type == 'nvib1':
-                encoder_hidden_states = hidden_states
-                
-                hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, self.kl_step, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg1"
-                )
-            elif layer_type == 'nvib2':
-                hidden_states = self.middle_model.norm(hidden_states)
-                
-                hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, self.kl_step, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg2"
-                )
-                hidden_states = hidden_states + encoder_hidden_states
-            else:  # 'client' or 'middle' layers
-                layer_output = layer(
-                    hidden_states,
-                    # attention_mask=causal_mask,
-                    attention_mask=None, # this is for flashattention
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
-                    **kwargs,
-                )
-                hidden_states = layer_output[0]
+
+        # 1️⃣ First client encoder layers
+        for encoder_layer in self.model.layers[: self.config.enc_num_layers]:
+            layer_output = encoder_layer(
+                hidden_states,
+                attention_mask=None,  # for flash attention
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+            hidden_states = layer_output[0]
+        
+        # 2️⃣ NVIB1 adapter
+        encoder_hidden_states = hidden_states
+        hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
+            self.nvib_transformer_adapter1, hidden_states, attention_mask,
+            self.kl_annealing_scheduler, self.kl_step,
+            self.weighted_kl, self.lambda_kld, self.lambda_klg,
+            kld, klg, self.training, "klg1"
+        )
+        
+        # 3️⃣ Middle model layers
+        for middle_layer in self.middle_model.layers:
+            hidden_states = middle_layer(
+                hidden_states,
+                attention_mask=None,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )[0]
+
+        hidden_states = self.middle_model.norm(hidden_states)
+        hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
+            self.nvib_transformer_adapter2, hidden_states, attention_mask,
+            self.kl_annealing_scheduler, self.kl_step,
+            self.weighted_kl, self.lambda_kld, self.lambda_klg,
+            kld, klg, self.training, "klg2"
+        )
+        hidden_states = hidden_states + encoder_hidden_states
+        
+        # 4️⃣ Remaining client layers (after middle block)
+        for decoder_layer in self.model.layers[-self.config.dec_num_layers:]:
+            # NVIB2 adapter before last decoder layer
+        
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=None,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )[0]
+        
+        # 5️⃣ Final normalization
         hidden_states = self.model.norm(hidden_states)
         
         # add hidden states from the last decoder layer
@@ -234,7 +252,7 @@ class SplitModelForCausalLM(SplitModel):
         hidden_states, attention, klg_vals, kld_vals, latent_dict = encoder(
             hidden_states, src_key_padding_mask=src_key_padding_mask, kl_list_name=kl_list_name
         )
-        kl_factor = kl_annealing_scheduler(kl_step)
+        kl_factor = kl_annealing_scheduler(kl_step) if training else 1.0
         kld_loss = weighted_mean(kl_list=kld_vals, weighted_mean=weighted_kl) * lambda_kld * kl_factor
         klg_loss = weighted_mean(kl_list=klg_vals, weighted_mean=weighted_kl) * lambda_klg * kl_factor
 

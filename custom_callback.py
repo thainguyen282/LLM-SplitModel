@@ -42,3 +42,38 @@ class MemoryCleanupCallback(TrainerCallback):
     def on_prediction_step(self, args, state, control, **kwargs):
         gc.collect()
         torch.cuda.empty_cache()
+
+from transformers import TrainerCallback
+import torch
+
+class GenerateOnTrainExampleCallback(TrainerCallback):
+    def __init__(self, tokenizer, model, train_dataset, every_n_steps=500, max_new_tokens=512):
+        self.tokenizer = tokenizer
+        self.model = model
+        self.train_dataset = train_dataset
+        self.every_n_steps = every_n_steps
+        self.max_new_tokens = max_new_tokens
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        # Only trigger every_n_steps
+        if state.global_step % self.every_n_steps == 0 and state.global_step > 0:
+            print(f"\n[Step {state.global_step}] Generating sample output:")
+
+            # Take first datapoint of training set
+            first_example = self.train_dataset[0]
+            
+            input_ids = torch.tensor(first_example["prompt"], dtype=torch.long).unsqueeze(0).to(self.model.device)
+
+            # Decode original input (for display)
+            prompt = self.tokenizer.decode(first_example["prompt"], skip_special_tokens=False)
+
+            with torch.no_grad():
+                output_ids = self.model.generate(
+                    input_ids=input_ids,
+                    max_new_tokens=self.max_new_tokens,
+                )
+
+            generated = self.tokenizer.decode(output_ids[0], skip_special_tokens=False)
+            print(f"Prompt: {prompt}\n---\nGenerated:\n{generated}\n")
+
+        return control

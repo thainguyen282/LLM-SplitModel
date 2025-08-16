@@ -6,8 +6,8 @@ def update_trainable_parameters(model, tokenizer):
     if model.config.is_merge:
         total_param = 0
         trainable_param = 0
-        for param in model.model.layers[model.config.enc_num_layers:-model.config.dec_num_layers].parameters(): 
-            param.requires_grad = False
+        # for param in model.model.layers[model.config.enc_num_layers:-model.config.dec_num_layers].parameters(): 
+        #     param.requires_grad = False
         for param in model.middle_model.parameters(): 
             param.requires_grad = False
             total_param += param.numel()

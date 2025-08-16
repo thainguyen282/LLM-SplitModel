@@ -93,6 +93,8 @@ class SplitModelForCausalLM(SplitModel):
             self.middle_model = None
         
         self.model = reference_model.model
+        unused_layers = self.model.layers[config.enc_num_layers:-config.dec_num_layers]
+        self.model.layers = nn.ModuleList(list(self.model.layers[:config.enc_num_layers]) + list(self.model.layers[-config.dec_num_layers:]))
         self.lm_head = reference_model.lm_head
 
         # split model params
@@ -134,12 +136,12 @@ class SplitModelForCausalLM(SplitModel):
             norm_first=True
         )
         encoder_norm1 = nn.LayerNorm(config.compress_dim, eps=1e-5, dtype=torch.bfloat16)  # Ensure LayerNorm is bfloat16
-        encoder_norm2 = nn.LayerNorm(config.hidden_size, eps=1e-5, dtype=torch.bfloat16)  # Ensure LayerNorm is bfloat16
         self.nvib_transformer_adapter1 = NVIBTransformerEncoder(
             encoder_layer=nvib_transformer_layer1, 
             num_layers=config.num_nvib_encoder_layers, 
             norm=encoder_norm1,
         )
+        encoder_norm2 = nn.LayerNorm(config.hidden_size, eps=1e-5, dtype=torch.bfloat16)  # Ensure LayerNorm is bfloat16
         self.nvib_transformer_adapter2 = NVIBTransformerEncoder(
             encoder_layer=nvib_transformer_layer2, 
             num_layers=config.num_nvib_encoder_layers, 
@@ -157,11 +159,12 @@ class SplitModelForCausalLM(SplitModel):
         )
         init_weights(self.nvib_transformer_adapter1)
         init_weights(self.nvib_transformer_adapter2)
-        self.hidden_states = None
         self.kld = None
         self.klg = None
         del reference_model
+        del unused_layers
         gc.collect()
+        torch.cuda.empty_cache()
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -188,65 +191,76 @@ class SplitModelForCausalLM(SplitModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = None # this if for flash attention 2 since it doesn't need causal_mask
-
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.model.rotary_emb(hidden_states, position_ids)
 
-        # decoder layers
-        next_decoder_cache = None
-
         kld = torch.tensor(0.0, device=hidden_states.device)
         klg = torch.tensor(0.0, device=hidden_states.device)
-        # blue print
-        layer_sequence = []
-        for i in range(self.enc_num_layers):
-            layer_sequence.append(('client', i, self.model.layers[i]))
-        if self.is_nvib:    
-            layer_sequence.append(('nvib1', None, self.nvib_transformer_adapter1))
-        if self.is_merge:
-            for i, middle_layer in enumerate(self.middle_model.layers):
-                layer_sequence.append(('middle', i, middle_layer))
-        for i in range(self.enc_num_layers, self.num_hidden_layers):
-            if self.is_merge:
-                if i < self.num_hidden_layers - self.dec_num_layers:
-                    continue
-            if i == self.num_hidden_layers - self.dec_num_layers and self.is_nvib:
-                layer_sequence.append(('nvib2', None, self.nvib_transformer_adapter2))
-
-            layer_sequence.append(('client', i, self.model.layers[i]))
-
-        # start forward
         encoder_hidden_states = None
-        for layer_type, layer_idx, layer in layer_sequence:
-            if layer_type == 'nvib1':
-                encoder_hidden_states = hidden_states
-                
-                hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, 0, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg1"
-                )
-            elif layer_type == 'nvib2':
-                hidden_states = self.middle_model.norm(hidden_states)
-                
-                hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
-                    layer, hidden_states, attention_mask, self.kl_annealing_scheduler, 0, self.weighted_kl, self.lambda_kld, self.lambda_klg, kld, klg, self.training, "klg2"
-                )
-                hidden_states = hidden_states + encoder_hidden_states
-            else:  # 'client' or 'middle' layers
-                layer_output = layer(
-                    hidden_states,
-                    # attention_mask=causal_mask,
-                    attention_mask=None, # this is for flashattention
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    use_cache=use_cache,
-                    cache_position=cache_position,
-                    position_embeddings=position_embeddings,
-                    **kwargs,
-                )
-                hidden_states = layer_output[0]
+
+        # 1️⃣ First client encoder layers
+        for encoder_layer in self.model.layers[: self.config.enc_num_layers]:
+            layer_output = encoder_layer(
+                hidden_states,
+                attention_mask=None,  # for flash attention
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )
+            hidden_states = layer_output[0]
+        
+        # 2️⃣ NVIB1 adapter
+        encoder_hidden_states = hidden_states
+        hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
+            self.nvib_transformer_adapter1, hidden_states, attention_mask,
+            self.kl_annealing_scheduler, 0,
+            self.weighted_kl, self.lambda_kld, self.lambda_klg,
+            kld, klg, self.training, "klg1"
+        )
+        
+        # 3️⃣ Middle model layers
+        for middle_layer in self.middle_model.layers:
+            hidden_states = middle_layer(
+                hidden_states,
+                attention_mask=None,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )[0]
+
+        hidden_states = self.middle_model.norm(hidden_states)
+        hidden_states, _, kld, klg, _ = self.apply_nvib_adapter(
+            self.nvib_transformer_adapter2, hidden_states, attention_mask,
+            self.kl_annealing_scheduler, 0,
+            self.weighted_kl, self.lambda_kld, self.lambda_klg,
+            kld, klg, self.training, "klg2"
+        )
+        hidden_states = hidden_states + encoder_hidden_states
+        
+        # 4️⃣ Remaining client layers (after middle block)
+        for decoder_layer in self.model.layers[-self.config.dec_num_layers:]:
+            # NVIB2 adapter before last decoder layer
+        
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=None,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            )[0]
+        
+        # 5️⃣ Final normalization
         hidden_states = self.model.norm(hidden_states)
         
         # add hidden states from the last decoder layer
@@ -286,7 +300,7 @@ class SplitModelForCausalLM(SplitModel):
         hidden_states, attention, klg_vals, kld_vals, latent_dict = encoder(
             hidden_states, src_key_padding_mask=src_key_padding_mask, kl_list_name=kl_list_name
         )
-        kl_factor = kl_annealing_scheduler(kl_step)
+        kl_factor = kl_annealing_scheduler(kl_step) if training else 1.0
         kld_loss = weighted_mean(kl_list=kld_vals, weighted_mean=weighted_kl) * lambda_kld * kl_factor
         klg_loss = weighted_mean(kl_list=klg_vals, weighted_mean=weighted_kl) * lambda_klg * kl_factor
 
@@ -309,7 +323,7 @@ class SplitModelForCausalLM(SplitModel):
         return hidden_states, attention, kld, klg, latent_dict
     
 def inference(
-    base_model_path: str = f"/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-100k-retry/checkpoint-11000",  # the only required argument
+    base_model_path: str = f"/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-mbpp/checkpoint-3050",  # the only required argument
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 ):
     prompter = Prompter(prompt_template_name)
@@ -332,23 +346,32 @@ def inference(
       
     # Ensure model is in evaluation mode
     model.eval()
+    print(model)
+    
     
     tokenizer = AutoTokenizer.from_pretrained(base_model_path)
 
     # Now test with the actual prompt
-    prompt = """
-    Write a python function to remove duplicate numbers from a given number of lists
-    """
+    system = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
+    prompt = "Write a function to sort a given matrix in ascending order according to the sum of its rows."
+    testlist = 'assert sort_matrix([[1, 2, 3], [2, 4, 5], [1, 1, 1]])==[[1, 1, 1], [1, 2, 3], [2, 4, 5]]'
+    # Write a python program to convert degree Celsius to Fahrenheit.]
+    # Write a Python function for converting an array of strings into a list of integers
+    # Create a web scraper in Python to extract the text content from multiple webpages.
+    
     prompt =  prompter.generate_prompt(
-                   prompt,
-                    "",
-                    "",
-                )
-    temp = make_chat_prompt(prompt,instruction_prefix, response_prefix, tokenizer)
+        prompt,
+        testlist,
+        "",
+    )
+    temp = make_chat_prompt(
+        prompt[len(system)+2:], instruction_prefix, response_prefix, tokenizer
+    )
     print(temp)
     
     
     model_inputs = tokenizer([temp], return_tensors="pt").to(model.device)
+    print(model_inputs)
     attention_mask = model_inputs.attention_mask
     
     with torch.no_grad():

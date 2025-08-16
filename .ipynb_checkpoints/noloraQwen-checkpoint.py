@@ -22,7 +22,7 @@ from utils.prompter import Prompter
 from configuration_split import SplitConfig
 from split_model import SplitModel, SplitModelForCausalLM
 from make_prompt import make_chat_prompt, get_code_completion
-from custom_callback import KLStepCallback, KLMetricsCallback, MemoryCleanupCallback
+from custom_callback import KLStepCallback, KLMetricsCallback, MemoryCleanupCallback, GenerateOnTrainExampleCallback
 from custom_data_loader import LoadData
 from update_trainable_parameters import update_trainable_parameters
 
@@ -33,18 +33,18 @@ def train(
     base_model_path: str = f"Qwen/Qwen2.5-Coder-7B-Instruct",
     middle_model_path: str = f"meta-llama/Llama-3.1-8B-Instruct",
     data_path: str = "/project/phan/codellama/datasets/PGCodeTraining100k",
-    output_dir: str = f"./temp-with-Qwen-Llama-with-mbpp/",
+    output_dir: str = f"./temp-with-Qwen-Llama-mbpp/",
     # training hyperparams
     batch_size: int = 1,
-    num_epochs: int = 3,
-    learning_rate: float = 1e-4,
+    num_epochs: int = 50,
+    learning_rate: float = 3e-5,
     cutoff_len: int = 4000,
     val_set_size: int = 500,
     warmup_steps: int = 750,
     gradient_accumulation_steps: int = 16, 
     # llm hyperparams
     train_on_inputs: bool = True,  # if False, masks out inputs in loss
-    resume_from_checkpoint: str = None,
+    resume_from_checkpoint: str = False,
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 
     #data preprocessing hyperparams
@@ -101,7 +101,7 @@ def train(
             load_best_model_at_end=True if val_set_size > 0 else False,
             max_grad_norm=1.0,
         ),
-        callbacks=[KLStepCallback(), KLMetricsCallback(), MemoryCleanupCallback()],
+        callbacks=[KLStepCallback(), KLMetricsCallback(), MemoryCleanupCallback(), GenerateOnTrainExampleCallback(tokenizer, model, train_data, every_n_steps=300)],
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
