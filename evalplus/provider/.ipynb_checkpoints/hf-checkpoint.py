@@ -139,7 +139,7 @@ class HuggingFaceDecoder(DecoderBase):
             inputs,
             "",
         )
-        prompt = make_chat_prompt(prompt[len(system)+2:,self.instruction_prefix, self.response_prefix, self.tokenizer)
+        prompt = make_chat_prompt(prompt[len(system)+2:],self.instruction_prefix, self.response_prefix, self.tokenizer)
         print(prompt)
         input_tokens = self.tokenizer.encode(prompt, return_tensors="pt").to(
             self.device
