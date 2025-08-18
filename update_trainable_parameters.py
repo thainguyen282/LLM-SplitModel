@@ -2,7 +2,6 @@ import torch
 
 def update_trainable_parameters(model, tokenizer):
     model.to(device="cuda" if torch.cuda.is_available() else "cpu",dtype=torch.bfloat16)  # Only convert device, dtype is already correct
-    print(model.device)
     if model.config.is_merge:
         total_param = 0
         trainable_param = 0

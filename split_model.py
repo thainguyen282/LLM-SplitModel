@@ -44,6 +44,24 @@ class SplitModelForCausalLM(SplitModel):
             AutoModel.from_pretrained(config.middle_model_path, torch_dtype=torch.bfloat16, attn_implementation=config.attn_implementation, device_map="auto")
             if config.middle_model_path else None
         )
+        # ref_config = AutoConfig.from_pretrained(config.base_model_path)
+        # ref_config.tie_word_embeddings = False
+        # reference_model = AutoModelForCausalLM.from_config(
+        #     ref_config,
+        #     attn_implementation=config.attn_implementation, 
+        #     torch_dtype=torch.bfloat16
+        # )
+        
+        # Initialize middle model from config if specified
+        # if config.middle_model_path is not None:
+        #     middle_config = AutoConfig.from_pretrained(config.middle_model_path)
+        #     self.middle_model = AutoModel.from_config(
+        #         middle_config,
+        #         attn_implementation=config.attn_implementation,
+        #         torch_dtype=torch.bfloat16
+        #     )
+        # else:
+        #     self.middle_model = None
         self.model = reference_model.model
         unused_layers = self.model.layers[config.enc_num_layers:-config.dec_num_layers]
         self.model.layers = nn.ModuleList(list(self.model.layers[:config.enc_num_layers]) + list(self.model.layers[-config.dec_num_layers:]))
@@ -133,6 +151,9 @@ class SplitModelForCausalLM(SplitModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
+            # if attention_mask is not None:
+            #     pad_mask = attention_mask.unsqueeze(-1).to(inputs_embeds.dtype)  # [batch, seq_len, 1]
+            #     inputs_embeds = inputs_embeds * pad_mask
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
         if cache_position is None:
@@ -221,6 +242,8 @@ class SplitModelForCausalLM(SplitModel):
 
         loss = None
         if labels is not None:
+            # labels = labels.clone()
+            # labels[attention_mask == 0] = -100
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.vocab_size, **kwargs)
             if self.lambda_klg != 0 or self.lambda_kld != 0: 
                 loss = loss + kld + klg

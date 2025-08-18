@@ -59,13 +59,14 @@ response_prefix = "Below is a Python script with a self-contained function that 
 _MAGIC_SPLITTER_ = "-[[]]-this-is-really-our-highest-priority-[[]]-"
 
 class SplitModel(PreTrainedModel, GenerationMixin):
+    _supports_attention_backend = True
     config_class = SplitConfig
     def __init__(self, config):
         super().__init__(config)
     
 
 class SplitModelForCausalLM(SplitModel):
-
+    _supports_attention_backend = True
     def __init__(self, config: SplitConfig):
         super().__init__(config)
 
@@ -323,7 +324,7 @@ class SplitModelForCausalLM(SplitModel):
         return hidden_states, attention, kld, klg, latent_dict
     
 def inference(
-    base_model_path: str = f"/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-mbpp/checkpoint-3050",  # the only required argument
+    base_model_path: str = f"/project/phan/tqn/Adapter/LLM-SplitModel/temp-with-Qwen-Llama-18k-eps27/checkpoint-5000",  # the only required argument
     prompt_template_name: str = "alpaca",  # The prompt template to use, will default to alpaca.
 ):
     prompter = Prompter(prompt_template_name)
@@ -353,19 +354,20 @@ def inference(
 
     # Now test with the actual prompt
     system = "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
-    prompt = "Write a function to sort a given matrix in ascending order according to the sum of its rows."
-    testlist = 'assert sort_matrix([[1, 2, 3], [2, 4, 5], [1, 1, 1]])==[[1, 1, 1], [1, 2, 3], [2, 4, 5]]'
+    prompt = "Write a function to print 'Hello World' 5 times"
+    # testlist = "assert square_nums([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])==[1, 4, 9, 16, 25, 36, 49, 64, 81, 100]"
     # Write a python program to convert degree Celsius to Fahrenheit.]
     # Write a Python function for converting an array of strings into a list of integers
     # Create a web scraper in Python to extract the text content from multiple webpages.
     
     prompt =  prompter.generate_prompt(
         prompt,
-        testlist,
+        # testlist,
+        "", 
         "",
     )
     temp = make_chat_prompt(
-        prompt[len(system)+2:], instruction_prefix, response_prefix, tokenizer
+        prompt, instruction_prefix, response_prefix, tokenizer
     )
     print(temp)
     
@@ -375,7 +377,7 @@ def inference(
     attention_mask = model_inputs.attention_mask
     
     with torch.no_grad():
-        generated_ids = model.generate(model_inputs.input_ids,attention_mask=attention_mask, max_new_tokens=1024)
+        generated_ids = model.generate(model_inputs.input_ids,attention_mask=attention_mask, max_new_tokens=512)
         
         generated_ids = [
             output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
