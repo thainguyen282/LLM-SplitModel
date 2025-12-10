@@ -276,7 +276,7 @@ Only specific layers are trainable:
 - Encoder layers (first few)
 - Decoder layers (last few)
 - Language model head
-- 
+
 ## 📚 Citation
 
 ### Qwen2.5
