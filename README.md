@@ -299,10 +299,10 @@ Only specific layers are trainable:
 ```
 ### NVIB (Neural Variational Information Bottleneck)
 ```bibtex
-@inproceedings{alemi2017dvib,
+@inproceedings{james2023dvib,
   title     = {A VAE FOR TRANSFORMERS WITH NONPARAMETRICVARIATIONAL INFORMATION BOTTLENECK},
   author    = {James Henderson, Fabio Fehr},
   booktitle = {International Conference on Learning Representations (ICLR)},
-  year      = {2017}
+  year      = {2023}
 }
 ```
