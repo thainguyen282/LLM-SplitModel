@@ -285,7 +285,7 @@ Only specific layers are trainable:
   title   = {Qwen2.5 Technical Report},
   author  = {Qwen Team},
   year    = {2024},
-  journal = {arXiv preprint arXiv:2407.xxxxx}
+  journal = {arXiv preprint arXiv:2412.15115}
 }
 ```
 ### Llama 3.1
@@ -294,7 +294,7 @@ Only specific layers are trainable:
   title   = {Llama 3.1: Open Foundation and Large Language Models},
   author  = {AI@Meta},
   year    = {2024},
-  journal = {arXiv preprint arXiv:2407.xxxxx}
+  journal = {arXiv preprint arXiv:2407.21783}
 }
 ```
 ### NVIB (Neural Variational Information Bottleneck)
