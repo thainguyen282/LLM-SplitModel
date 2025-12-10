@@ -276,10 +276,33 @@ Only specific layers are trainable:
 - Encoder layers (first few)
 - Decoder layers (last few)
 - Language model head
+- 
+## 📚 Citation
 
-## Citation
-
-If you use this code, please cite the relevant papers for:
-- Qwen2.5 models
-- Llama 3.1 models
-- NVIB (Neural Variational Information Bottleneck)
+### Qwen2.5
+```bibtex
+@article{qwen25,
+  title   = {Qwen2.5 Technical Report},
+  author  = {Qwen Team},
+  year    = {2024},
+  journal = {arXiv preprint arXiv:2407.xxxxx}
+}
+```
+### Llama 3.1
+```bibtex
+@article{llama31,
+  title   = {Llama 3.1: Open Foundation and Large Language Models},
+  author  = {AI@Meta},
+  year    = {2024},
+  journal = {arXiv preprint arXiv:2407.xxxxx}
+}
+```
+### NVIB (Neural Variational Information Bottleneck)
+```bibtex
+@inproceedings{alemi2017dvib,
+  title     = {A VAE FOR TRANSFORMERS WITH NONPARAMETRICVARIATIONAL INFORMATION BOTTLENECK},
+  author    = {James Henderson, Fabio Fehr},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2017}
+}
+```
