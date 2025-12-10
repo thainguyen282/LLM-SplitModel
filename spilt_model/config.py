@@ -14,7 +14,7 @@
 # limitations under the License.
 """Split model configuration derived from Qwen2 model configuration"""
 
-from transformers.configuration_utils import PretrainedConfig, layer_type_validation
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import rope_config_validation
 from transformers.utils import logging
 
@@ -131,8 +131,6 @@ class SplitConfig(PretrainedConfig):
 
     def __init__(
         self,
-        # base_model_path: str = "meta-llama/Llama-3.1-8B-Instruct",
-        # base_model_path: str = "/project/phan/codellama/FintunnedModel7B/CodeQwen_eps27_400k_tokenizerDP/checkpoint-82002",
         base_model_path: str = "Qwen/Qwen2.5-Coder-7B-Instruct",
 
         ##################### Qwen2.5-7B #####################
@@ -156,72 +154,10 @@ class SplitConfig(PretrainedConfig):
         torch_dtype= "bfloat16",
         vocab_size= 152064,
         use_cache=False,
-
-        ##################### LLama3.1 #####################
-        # attention_dropout=0.0,
-        # bos_token_id= 128000,
-        # eos_token_id= [
-        #   128001,
-        #   128008,
-        #   128009
-        # ],
-        # hidden_act= "silu",
-        # hidden_size= 4096,
-        # initializer_range= 0.02,
-        # intermediate_size= 14336,
-        # max_position_embeddings= 131072,
-        # mlp_bias= False,
-        # num_attention_heads= 32,
-        # num_hidden_layers= 32,
-        # num_key_value_heads= 8,
-        # pretraining_tp= 1,
-        # rms_norm_eps= 1e-05,
-        # rope_theta= 500000.0,
-        # tie_word_embeddings= False,
-        # torch_dtype= "bfloat16",
-        # vocab_size= 128256,
-        # use_cache=False,
-        # rope_scaling= {
-        # "factor": 8.0,
-        # "low_freq_factor": 1.0,
-        # "high_freq_factor": 4.0,
-        # "original_max_position_embeddings": 8192,
-        # "rope_type": "llama3"
-        # },
-        # use_sliding_window = False, 
-        # sliding_windown = None,
-
-        ##################### Qwen2.5-Coder-1.5B #####################
-        # vocab_size=151936,
-        # bos_token_id=151643,
-        # eos_token_id=151645,
-        # hidden_size=1536,
-        # intermediate_size=8960,
-        # num_hidden_layers=28,
-        # num_attention_heads=12,
-        # num_key_value_heads=2,
-        # hidden_act="silu",
-        # max_position_embeddings=32768,
-        # initializer_range=0.02,
-        # rms_norm_eps=1e-06,
-        # use_cache=False,
-        # tie_word_embeddings=False,
-        # # rope_theta=10000.0,
-        # rope_theta=1000000.0,
-        # rope_scaling=None,
-        # use_sliding_window=False,
-        # sliding_window=32768,
-        # # sliding_window=null,
-        # max_window_layers=28,
-        # attention_dropout=0.0,
-        # layer_types=None,
-        # torch_dtype="bfloat16",
-
         # split model params
         enc_num_layers: int = 1,
         dec_num_layers: int = 4,
         nhead: int = 1,
-
         # nvib params
         is_nvib: bool = True,
         dropout: float = 0.1,
@@ -236,7 +172,6 @@ class SplitConfig(PretrainedConfig):
         compress_intermediate_size: int = 14336,
         is_merge: bool = True,
         middle_model_path: str = "meta-llama/Llama-3.1-8B-Instruct",
-        # middle_model_path: str = "/project/phan/codellama/FintunnedModel7B/CodeQwen_eps27_400k_tokenizerDP/checkpoint-82002",
         **kwargs ,
     ):
         self.vocab_size = vocab_size
@@ -249,9 +184,6 @@ class SplitConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None
-        # self.max_window_layers = max_window_layers
-
-        # for backward compatibility
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads
 
@@ -264,21 +196,9 @@ class SplitConfig(PretrainedConfig):
         self.rope_scaling = rope_scaling
         self.attention_dropout = attention_dropout
         self.torch_dtype = torch_dtype
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self)
-        # self.layer_types = layer_types
-        # if self.layer_types is None:
-        #     self.layer_types = [
-        #         "sliding_attention"
-        #         if self.sliding_window is not None and i >= self.max_window_layers
-        #         else "full_attention"
-        #         for i in range(self.num_hidden_layers)
-        #     ]
-        # layer_type_validation(self.layer_types)
-
         self.base_model_path = base_model_path
         self.enc_num_layers = enc_num_layers
         self.dec_num_layers = dec_num_layers
@@ -295,8 +215,6 @@ class SplitConfig(PretrainedConfig):
         self.compress_intermediate_size = compress_intermediate_size
         self.is_merge = is_merge
         self.middle_model_path = middle_model_path
-        
-        # Add missing attributes that are referenced in the model
         self.output_attentions = False
         self.output_hidden_states = False
 

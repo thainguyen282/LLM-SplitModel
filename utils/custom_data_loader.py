@@ -1,4 +1,5 @@
 import random
+import os
 from datasets import load_dataset, Dataset, load_from_disk
 from make_prompt import make_chat_prompt, get_code_completion  
 
@@ -109,7 +110,7 @@ class LoadData:
             messages = make_chat_prompt(temp_prompt, instruction_prefix, response_prefix, self.tokenizer)
             middle = self.tokenizer.batch_decode(
                 [temp_tokenizer["input_ids"][random_numbers[0]:random_numbers[1]]],
-                skip_special_tokens=FalseF
+                skip_special_tokens=False
             )[0]
             messages += middle
 
@@ -180,13 +181,26 @@ class LoadData:
 
     def _load_dataset(self):
         if not self.using_raw_data:
-            train_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_eps27.json")["train"]
-            val_data = load_dataset('json', data_files="/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_eps27.json")["train"]
+            # Determine directory for preprocessed data files
+            if self.data_path.endswith(".json") or self.data_path.endswith(".jsonl"):
+                data_dir = os.path.dirname(self.data_path) if os.path.dirname(self.data_path) else "."
+            else:
+                data_dir = self.data_path
+            
+            # Construct paths for preprocessed train and validation data
+            train_data_path = os.path.join(data_dir, "train_data_preprocessed.json")
+            val_data_path = os.path.join(data_dir, "val_data_preprocessed.json")
+            
+            train_data = load_dataset('json', data_files=train_data_path)["train"]
+            val_data = load_dataset('json', data_files=val_data_path)["train"]
         else:
             if self.data_path.endswith(".json") or self.data_path.endswith(".jsonl"):
                 data = load_dataset("json", data_files=self.data_path)
+                data_dir = os.path.dirname(self.data_path) if os.path.dirname(self.data_path) else "."
             else:
                 data = load_from_disk(self.data_path)
+                data_dir = self.data_path
+            
             train_val = data["train"].train_test_split(
                 test_size=self.val_set_size, shuffle=True, seed=42
             )
@@ -197,9 +211,13 @@ class LoadData:
                 train_data = data["train"].shuffle().map(self.generate_and_tokenize_prompt,batched=True, num_proc=128)
                 val_data = None
             
-            train_data.to_json("/project/phan/tqn/Adapter/LLM-SplitModel/data/train_data_qwen_eps27.json")
+            # Save preprocessed data to the same directory as the input data
+            train_data_path = os.path.join(data_dir, "train_data_preprocessed.json")
+            val_data_path = os.path.join(data_dir, "val_data_preprocessed.json")
+            
+            train_data.to_json(train_data_path)
             if val_data:
-                val_data.to_json("/project/phan/tqn/Adapter/LLM-SplitModel/data/val_data_qwen_eps27.json")
+                val_data.to_json(val_data_path)
 
         return train_data, val_data
 

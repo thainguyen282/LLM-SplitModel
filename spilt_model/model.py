@@ -24,7 +24,7 @@ from nvib_selfattention.nvib_sa_transformer_encoder import (
     NVIBTransformerEncoderLayer,
 )
 from update_causal_mask import _prepare_4d_causal_attention_mask_with_cache_position
-from support_split_model import init_weights, weighted_mean
+from split_model.init_weights import init_weights, weighted_mean
 from kl_annealing import kl_annealing
 
 class SplitModel(PreTrainedModel, GenerationMixin):
@@ -120,6 +120,7 @@ class SplitModelForCausalLM(SplitModel):
         self.hidden_states = None
         self.kld = None
         self.klg = None
+        self.kl_step=0
         del reference_model
         gc.collect()
 

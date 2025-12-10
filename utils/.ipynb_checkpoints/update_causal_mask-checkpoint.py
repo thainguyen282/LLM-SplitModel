@@ -4,7 +4,7 @@ from torch import Tensor
 from torch import dtype, device
 from transformers.cache_utils import Cache, DynamicCache, StaticCache, SlidingWindowCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-from configuration_split import SplitConfig
+from split_model.config import SplitConfig
 
 @staticmethod
 def _prepare_4d_causal_attention_mask_with_cache_position(
