@@ -1,6 +1,4 @@
-import os, sys
-repo_root = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(repo_root)
+import os
 import torch
 import fire
 import wandb

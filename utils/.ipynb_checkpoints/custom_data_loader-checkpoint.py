@@ -1,7 +1,7 @@
 import random
 import os
 from datasets import load_dataset, Dataset, load_from_disk
-from make_prompt import make_chat_prompt, get_code_completion  
+from utils.make_prompt import make_chat_prompt, get_code_completion  
 
 instruction_prefix = (
     "Think step by step: please provide an efficient and self-contained Python script "

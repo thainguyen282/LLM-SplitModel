@@ -5,6 +5,11 @@ from split_model.config import SplitConfig
 from split_model.model import SplitModel, SplitModelForCausalLM
 from utils.make_prompt import make_chat_prompt
 from utils.prompter import Prompter
+import os
+import sys
+repo_root = os.path.dirname(os.path.abspath(__file__))
+if repo_root not in sys.path:
+    sys.path.append(repo_root)
 
 instruction_prefix = "Think step by step: please provide an efficient and self-contained Python script that solves the following problem in a markdown code block:"
 response_prefix = "Below is a Python script with a self-contained function that efficiently solves the problem and passes corresponding tests:"
