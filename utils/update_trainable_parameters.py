@@ -26,7 +26,9 @@ def update_trainable_parameters(model, tokenizer):
     for param in model.model.norm.parameters(): 
         param.requires_grad = True
         trainable_param += param.numel()
-
+    for param in model.model.embed_tokens.weight:
+        param.requires_grad = True
+        trainable_param += param.numel()
     # model.model.embed_tokens.weight.requires_grad_(True)
 
     print(f'Total Parameters: {total_param:,}')

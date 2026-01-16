@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import gc
 import wandb
+import os, sys
+repo_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(repo_root)
 
 from typing import Optional, List, Tuple, Union
 
@@ -16,16 +19,16 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.cache_utils import Cache, DynamicCache, StaticCache, SlidingWindowCache
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
-from configuration_split import SplitConfig
+from split_model.config import SplitConfig
 from nvib.denoising_attention import DenoisingMultiheadAttention
 from nvib.nvib_layer import Nvib
 from nvib_selfattention.nvib_sa_transformer_encoder import (
     NVIBTransformerEncoder,
     NVIBTransformerEncoderLayer,
 )
-from update_causal_mask import _prepare_4d_causal_attention_mask_with_cache_position
-from support_split_model import init_weights, weighted_mean
-from kl_annealing import kl_annealing
+from utils.update_causal_mask import _prepare_4d_causal_attention_mask_with_cache_position
+from split_model.init_weights import init_weights, weighted_mean
+from utils.kl_annealing import kl_annealing
 
 class SplitModel(PreTrainedModel, GenerationMixin):
     config_class = SplitConfig
@@ -120,6 +123,7 @@ class SplitModelForCausalLM(SplitModel):
         self.hidden_states = None
         self.kld = None
         self.klg = None
+        self.kl_step=0
         del reference_model
         gc.collect()
 
